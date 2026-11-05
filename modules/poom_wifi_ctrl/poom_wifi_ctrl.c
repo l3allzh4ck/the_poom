@@ -546,7 +546,17 @@ esp_err_t poom_wifi_ctrl_set_promiscuous_rx_cb(wifi_promiscuous_cb_t cb)
 
 esp_err_t poom_wifi_ctrl_init_apsta(void)
 {
-    return poom_wifi_ctrl_common_init_(WIFI_MODE_APSTA);
+    esp_err_t err = poom_wifi_ctrl_common_init_(WIFI_MODE_APSTA);
+
+#if defined(CONFIG_IDF_TARGET_ESP32C5)
+    /* Mirror init_sta(): dual-band AUTO right after start so a later 5 GHz
+     * set_channel is valid (the capture path enables promiscuous before it). */
+    if(err == ESP_OK)
+    {
+        err = esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
+    }
+#endif
+    return err;
 }
 
 esp_err_t poom_wifi_ctrl_init_sta(void)
@@ -839,14 +849,23 @@ esp_err_t poom_wifi_ctrl_set_channel(uint8_t channel)
     }
 
 #if defined(CONFIG_IDF_TARGET_ESP32C5)
+    /* 5 GHz channels need the radio in dual-band AUTO before tuning. */
     if(channel > POOM_WIFI_CTRL_WIFI_CHANNEL_MAX)
     {
-        esp_err_t err = esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
-        if(err != ESP_OK)
+        esp_err_t berr = esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
+        if(berr != ESP_OK)
         {
-            return err;
+            POOM_PRINTF_E("set_band_mode(AUTO) for ch %u failed: %s",
+                          (unsigned)channel, esp_err_to_name(berr));
+            return berr;
         }
     }
 #endif
-    return esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    esp_err_t err = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    if(err != ESP_OK)
+    {
+        POOM_PRINTF_E("esp_wifi_set_channel(%u) failed: %s",
+                      (unsigned)channel, esp_err_to_name(err));
+    }
+    return err;
 }
