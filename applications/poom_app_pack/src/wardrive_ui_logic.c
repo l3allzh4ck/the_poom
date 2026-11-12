@@ -82,9 +82,9 @@ unsigned wd_main_menu(bool active,wd_menu_item_t out[8]) {
     out[n++]=WD_MENU_API; out[n++]=WD_MENU_WIFI; out[n++]=WD_MENU_SETTINGS;
     return n;
 }
-const char *wd_main_menu_label(wd_menu_item_t item,bool active) {
+const char *wd_main_menu_label(wd_menu_item_t item,bool active,bool paused) {
     switch(item) {
-        case WD_MENU_START: return active?"Resume Session":"Start Wardrive";
+        case WD_MENU_START: return active?(paused?"Resume Paused Session":"Resume Active Session"):"Start Wardrive";
         case WD_MENU_STOP: return "Stop Session";
         case WD_MENU_GPS: return "Check GPS Status";
         case WD_MENU_SAVED: return "Saved Sessions";

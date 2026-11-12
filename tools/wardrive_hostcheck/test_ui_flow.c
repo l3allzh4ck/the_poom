@@ -145,13 +145,15 @@ const poom_gps_adapter_t *poom_gps_xa1110(void) { return NULL; }
 /* Recording and radio. */
 #include "poom_wardrive.h"
 static bool radio_started,radio_stopped,radio_paused,radio_done;
-static unsigned checkpoints;
+static unsigned checkpoints,saved_sessions,discarded_sessions;
+static bool finalization_failure;
 bool wd_session_start(wd_session_t *s,const char *root,const char *id,const wd_settings_t *st) { (void)root;(void)id; memset(s,0,sizeof(*s)); s->settings=*st; s->active=true; return true; }
 bool wd_session_gps(wd_session_t *s,const poom_gps_fix_t *f,uint64_t n) { (void)s;(void)f;(void)n; return true; }
 bool wd_session_observe(wd_session_t *s,const wd_observation_t *o) { (void)s;(void)o; return true; }
 void wd_session_time(wd_session_t *s,int64_t utc,uint64_t now) { s->clock_utc=utc;s->clock_ms=now; }
 bool wd_session_checkpoint(wd_session_t *s,const char *state) { (void)s;(void)state; checkpoints++; return true; }
-bool wd_session_stop(wd_session_t *s) { s->active=false; return true; }
+bool wd_session_stop(wd_session_t *s) { saved_sessions++; s->active=false; return !finalization_failure; }
+bool wd_session_discard(wd_session_t *s) { discarded_sessions++; s->active=false; return !finalization_failure; }
 void wd_radio_set_gps(const poom_gps_fix_t *f) { (void)f; }
 void wd_radio_release(void) {}
 bool wd_radio_quiescent(void) { return true; }
@@ -302,12 +304,47 @@ int main(void) {
     advance(1000); frame(); assert(strcmp(find_at(40,33)->s,frozen)>0&&!strncmp(find_at(40,33)->s,"00:24:2",7));
 
     /* Short B: back to main, recording continues; main shows Resume/Stop. */
-    tap(BUTTON_B); assert(ui->screen==WD_SCREEN_MAIN&&ui->session.active&&!radio_stopped);
-    assert(at(2,12,"Resume Session")&&at(2,22,"Stop Session")&&at(2,32,"Check GPS Status")&&at(0,56,"A:SELECT B:EXIT+STOP")); save_preview("08-main-recording");
+    tap(BUTTON_B); assert(ui->screen==WD_SCREEN_BACKGROUND&&ui->session.active&&!ui->session.paused&&!radio_stopped);
+    assert(at(0,28,"will continue running")&&at(0,38,"in the background.")); save_preview("08-background-notice");
+    tap(BUTTON_A); assert(ui->screen==WD_SCREEN_MAIN&&ui->session.active&&!ui->session.paused&&!radio_stopped);
+    assert(at(2,12,"Resume Active Session")&&at(2,22,"Stop Session")&&at(2,32,"Check GPS Status")&&at(0,56,"A:SELECT B:EXIT MENU")); save_preview("08-main-recording");
     goto_main_item(WD_MENU_SAVED); tap(BUTTON_A); assert(ui->screen==WD_SCREEN_MAIN&&!strcmp(ui->message,"STOP SESSION FIRST"));
     goto_main_item(WD_MENU_STOP); tap(BUTTON_A); assert(ui->screen==WD_SCREEN_STOP&&at(0,0,"STOP SESSION?")); save_preview("09-stop-confirm");
     tap(BUTTON_B); assert(ui->screen==WD_SCREEN_MAIN&&ui->session.active&&!ui->stopping);
     goto_main_item(WD_MENU_START); tap(BUTTON_A); assert(ui->screen==WD_SCREEN_LIVE);
+    /* B acknowledgement leaves recording alone; exit warning defaults to save
+     * and cancellation preserves both radio and pause state. */
+    tap(BUTTON_B); assert(ui->screen==WD_SCREEN_BACKGROUND); tap(BUTTON_B);
+    assert(ui->screen==WD_SCREEN_MAIN&&!ui->exiting&&!radio_stopped);
+    tap(BUTTON_B); assert(ui->screen==WD_SCREEN_EXIT_SESSION&&ui->exit_choice==0&&!ui->exiting);
+    assert(at(2,36,"Save session and exit")&&at(2,46,"Exit without saving")); save_preview("08-exit-warning");
+    tap(BUTTON_DOWN); assert(ui->exit_choice==1); tap(BUTTON_B);
+    assert(ui->screen==WD_SCREEN_MAIN&&ui->session.active&&!ui->session.paused&&!radio_stopped);
+    tap(BUTTON_B); assert(ui->exit_choice==0); tap(BUTTON_B);
+    goto_main_item(WD_MENU_START); tap(BUTTON_A); hold_for(BUTTON_A,2040);
+    assert(ui->session.paused&&radio_paused);
+    tap(BUTTON_B); assert(ui->screen==WD_SCREEN_BACKGROUND&&at(0,28,"will remain paused")); tap(BUTTON_A);
+    assert(ui->session.paused&&radio_paused&&at(2,12,"Resume Paused Session")); save_preview("08-main-paused");
+    tap(BUTTON_B); assert(ui->screen==WD_SCREEN_EXIT_SESSION&&ui->exit_choice==0); tap(BUTTON_B);
+    assert(ui->session.paused&&radio_paused&&!ui->exiting);
+    goto_main_item(WD_MENU_START); tap(BUTTON_A);
+    assert(ui->screen==WD_SCREEN_LIVE&&!ui->session.paused&&!radio_paused);
+
+    /* All live pages acknowledge background recording without radio teardown
+     * or freezing the active-session timer. */
+    const unsigned live_pages[]={WD_SCREEN_LIVE,WD_SCREEN_GPS,WD_SCREEN_STATS};
+    unsigned background_disconnects=disconnects;
+    for(unsigned page=0;page<3;page++) {
+        ui->screen=live_pages[page];tap(BUTTON_B);
+        assert(ui->screen==WD_SCREEN_BACKGROUND&&!ui->session.paused&&!radio_stopped);
+        uint64_t elapsed_before=wd_elapsed_ms(&ui->elapsed,ms());advance(1000);
+        assert(wd_elapsed_ms(&ui->elapsed,ms())==elapsed_before+1000);
+        tap(page%2?BUTTON_A:BUTTON_B);
+        assert(ui->screen==WD_SCREEN_MAIN&&ui->session.active&&!ui->session.paused);
+        assert(disconnects==background_disconnects&&!radio_stopped);
+        goto_main_item(WD_MENU_START);tap(BUTTON_A);
+    }
+
     /* Carousel: shared header with clock; GPS page indicator at the bottom. */
     tap(BUTTON_RIGHT); assert(ui->screen==WD_SCREEN_GPS&&at(0,0,"GPS STATUS")&&at(98,0,"06:00")&&at(110,56,"1/3")&&!contains("FIX ACQUIRED")); save_preview("10-gps-live");
     tap(BUTTON_DOWN); assert(at(110,56,"2/3")&&find("SPEED --")&&find("FIX AGE --"));
@@ -325,6 +362,29 @@ int main(void) {
     ev(BUTTON_B,BUTTON_PRESS_UP);
     tap(BUTTON_A); assert(ui->stopping&&radio_stopped&&ui->screen==WD_SCREEN_LIVE&&at(0,56,"STOPPING..."));
     ui->session.active=false; ui->stopping=false; radio_done=false; ui->screen=WD_SCREEN_MAIN; ui->selection=0; frame();
+
+    /* Explicit exit choices: wait for radio drain; save is default and discard
+     * only runs after moving the selection and confirming with A. */
+    for(unsigned discard=0;discard<2;discard++) {
+        ui->session.active=true;ui->session.paused=discard;ui->exiting=false;
+        ui->screen=WD_SCREEN_MAIN;radio_stopped=false;radio_done=false;
+        unsigned saved_before=saved_sessions,discarded_before=discarded_sessions;
+        tap(BUTTON_B); assert(ui->screen==WD_SCREEN_EXIT_SESSION&&ui->exit_choice==0&&!radio_stopped);
+        if(discard) tap(BUTTON_DOWN);
+        tap(BUTTON_A); assert(ui->exiting&&ui->stopping&&radio_stopped);
+        finish_recording(ms());assert(ui->session.active&&saved_sessions==saved_before&&discarded_sessions==discarded_before);
+        radio_done=true;finish_recording(ms());
+        assert(!ui->session.active&&!ui->stopping&&ui->exiting);
+        assert(saved_sessions==saved_before+!discard&&discarded_sessions==discarded_before+discard);
+        ui->exiting=false;
+    }
+    for(unsigned discard=0;discard<2;discard++) {
+        ui->session.active=true;ui->screen=WD_SCREEN_MAIN;radio_done=true;finalization_failure=true;
+        tap(BUTTON_B);if(discard)tap(BUTTON_DOWN);tap(BUTTON_A);finish_recording(ms());
+        assert(!ui->exiting&&ui->screen==WD_SCREEN_MAIN&&!ui->session.active);
+        assert(!strcmp(ui->message,discard?"DISCARD FAILED":"SD ERROR: RECOVER LOG"));
+    }
+    finalization_failure=false;radio_done=false;ui->message[0]=0;ui->session.paused=false;ui->selection=0;frame();
 
     /* Standalone GPS: page headings, no clock, indicator at the bottom. */
     goto_main_item(WD_MENU_GPS); tap(BUTTON_A); assert(ui->screen==WD_SCREEN_GPS&&at(0,0,"GPS POSITION")&&!find("06:00")&&at(110,56,"1/3"));

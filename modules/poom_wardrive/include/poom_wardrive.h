@@ -47,6 +47,10 @@ bool wd_observation_exportable(const wd_observation_t *observation);
 bool wd_session_observe(wd_session_t *s,const wd_observation_t *o);
 bool wd_session_checkpoint(wd_session_t *s,const char *state);
 bool wd_session_stop(wd_session_t *s);
+/* Explicit user discard of the current active recording. Close its handles
+ * and remove only its recorder-created files/directory, never saved sessions.
+ * Caller must stop/drain the radio worker first. Failure is reported to UI. */
+bool wd_session_discard(wd_session_t *s);
 /* Rebuild derived index and report from valid journal prefix. Partial/corrupt
  * tail remains in the original journal for inspection; no source deletion. */
 bool wd_session_recover(const char *directory);

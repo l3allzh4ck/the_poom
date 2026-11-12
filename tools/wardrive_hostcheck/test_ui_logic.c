@@ -63,11 +63,15 @@ int main(void) {
     /* Menus: spec order, Stop directly below Resume, GPS third while active. */
     wd_menu_item_t items[8];
     static const char *const idle[]={"Start Wardrive","Check GPS Status","Saved Sessions","Bulk WiGLE Upload","WiGLE API Settings","WiFi Upload Settings","Additional Settings"};
-    static const char *const active[]={"Resume Session","Stop Session","Check GPS Status","Saved Sessions","Bulk WiGLE Upload","WiGLE API Settings","WiFi Upload Settings","Additional Settings"};
+    static const char *const active[]={"Resume Active Session","Stop Session","Check GPS Status","Saved Sessions","Bulk WiGLE Upload","WiGLE API Settings","WiFi Upload Settings","Additional Settings"};
     assert(wd_main_menu(false,items)==7);
-    for(unsigned i=0;i<7;i++) { assert(!strcmp(wd_main_menu_label(items[i],false),idle[i])); assert(strlen(idle[i])<=20); }
+    for(unsigned i=0;i<7;i++) { assert(!strcmp(wd_main_menu_label(items[i],false,false),idle[i])); assert(strlen(idle[i])<=20); }
     assert(wd_main_menu(true,items)==8);
-    for(unsigned i=0;i<8;i++) assert(!strcmp(wd_main_menu_label(items[i],true),active[i]));
+    for(unsigned i=0;i<8;i++) assert(!strcmp(wd_main_menu_label(items[i],true,false),active[i]));
+
+    assert(!strcmp(wd_main_menu_label(WD_MENU_START,true,true),"Resume Paused Session"));
+    assert(strlen(wd_main_menu_label(WD_MENU_START,true,true))<=WD_UI_COLUMNS);
+    assert(strlen(wd_main_menu_label(WD_MENU_START,true,false))<=WD_UI_COLUMNS);
 
     /* Wrap: words kept whole, paragraphs separated, nothing past 21 columns. */
     char lines[24][WD_UI_COLUMNS+1];

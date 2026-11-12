@@ -148,6 +148,25 @@ bool wd_session_stop(wd_session_t *s) {
     if(s->index && fclose(s->index)) ok=false;
     s->journal=NULL; s->index=NULL; s->active=false; return ok;
 }
+bool wd_session_discard(wd_session_t *s) {
+    if(!s||!s->active||!s->directory[0]) return false;
+    bool ok=true;
+    if(s->journal&&fclose(s->journal)) ok=false;
+    if(s->index&&fclose(s->index)) ok=false;
+    s->journal=NULL; s->index=NULL; s->active=false;
+    /* No recursive deletion: only files produced for this recording. An
+     * unexpected file/subdirectory is retained and rmdir reports failure. */
+    static const char *const files[]={"observations.wd","devices.idx",
+        "session.json","session.tmp","session.json.bak"};
+    for(unsigned i=0;i<sizeof(files)/sizeof(files[0]);i++) {
+        char p[192];
+        if(!path(p,sizeof(p),s->directory,files[i])) { ok=false; continue; }
+        if(unlink(p)&&errno!=ENOENT) ok=false;
+    }
+    if(rmdir(s->directory)&&errno!=ENOENT) ok=false;
+    s->fault=!ok;
+    return ok;
+}
 bool wd_session_recover(const char *directory) {
     wd_session_t s={0}; wd_settings_default(&s.settings);
     if(strlen(directory)>=sizeof(s.directory)) return false;

@@ -6,6 +6,8 @@
 #include <assert.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
+#include <errno.h>
 /* Reproduce an unset device clock while GPS supplies recording UTC. */
 time_t time(time_t *out) { if(out) *out=0;return 0; }
 
@@ -102,5 +104,22 @@ int main(int argc,char **argv) {
     FILE *metadata=fopen(manifest,"rb");assert(metadata);char text[2048]={0};
     assert(fread(text,1,sizeof(text)-1,metadata)>0&&!fclose(metadata));
     assert(strstr(text,"2026-11-11 11:12:03")&&strstr(text,"2026-11-11 11:12:15"));
+    /* Explicit discard removes only the current recording, preserving prior
+     * saved sessions. Completed sessions cannot be discarded through this API. */
+    assert(!wd_session_discard(NULL)&&!wd_session_discard(&late));
+    wd_session_t discarded;
+    assert(wd_session_start(&discarded,argv[1],"discard-current",&settings));
+    char discarded_dir[160];strcpy(discarded_dir,discarded.directory);
+    assert(wd_session_discard(&discarded)&&!discarded.active&&!discarded.journal&&!discarded.index);
+    assert(access(discarded_dir,F_OK)!=0&&errno==ENOENT);
+    assert(access(manifest,F_OK)==0);
+    assert(!wd_session_discard(&discarded));
+    /* Unknown files are retained and failure is visible, never recursively
+     * swept up by the discard action. */
+    assert(wd_session_start(&discarded,argv[1],"discard-unknown",&settings));
+    char extra[224];snprintf(extra,sizeof(extra),"%s/keep.txt",discarded.directory);
+    FILE *unknown=fopen(extra,"wb");assert(unknown);fputs("keep",unknown);assert(!fclose(unknown));
+    assert(!wd_session_discard(&discarded)&&discarded.fault&&!discarded.active);
+    assert(access(extra,F_OK)==0&&access(manifest,F_OK)==0);
     puts("GPS/session integration: no fix, UTC expiry, disconnect/reconnect, reacquisition, dedup and export passed");
 }

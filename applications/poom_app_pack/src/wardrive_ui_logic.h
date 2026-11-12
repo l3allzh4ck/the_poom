@@ -61,7 +61,7 @@ wd_gps_icon_t wd_gps_icon(bool connected,bool fix,bool had_fix);
 /* Main menu composition (spec order). Stop Session follows Resume. */
 typedef enum { WD_MENU_START, WD_MENU_STOP, WD_MENU_GPS, WD_MENU_SAVED, WD_MENU_BULK, WD_MENU_API, WD_MENU_WIFI, WD_MENU_SETTINGS } wd_menu_item_t;
 unsigned wd_main_menu(bool active,wd_menu_item_t out[8]);
-const char *wd_main_menu_label(wd_menu_item_t item,bool active);
+const char *wd_main_menu_label(wd_menu_item_t item,bool active,bool paused);
 
 /* Word wrap: '\n' ends a line, "\n\n" leaves a blank line. Returns the line
  * count (may exceed max; only the first max lines are written). */

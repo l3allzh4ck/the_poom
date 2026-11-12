@@ -57,7 +57,8 @@ typedef struct {
     unsigned timezone_row;
     unsigned screen,selection,gps_page,setting_row;
     unsigned presented_screen,presented_gps_page;
-    bool exiting,stopping,mounted_here,raw,had_fix;
+    bool exiting,stopping,mounted_here,raw,had_fix,discard_on_exit;
+    unsigned exit_choice;
     uint64_t started,last_raw,last_gps_log,last_checkpoint;
     wd_elapsed_t elapsed;
     wd_hold_t hold;
@@ -609,7 +610,7 @@ static void main_select(void) {
     if(ui->selection>=count) ui->selection=0;
     ui->message[0]=0;
     switch(items[ui->selection]) {
-        case WD_MENU_START: if(ui->session.active) ui->screen=WD_SCREEN_LIVE; else { wd_ui_disconnect(); ui->transfer_on=false; start(); } break;
+        case WD_MENU_START: if(ui->session.active) { if(ui->session.paused) pause_toggle(esp_timer_get_time()/1000); ui->screen=WD_SCREEN_LIVE; } else { wd_ui_disconnect(); ui->transfer_on=false; start(); } break;
         case WD_MENU_STOP: ui->stop_return=WD_SCREEN_MAIN; ui->screen=WD_SCREEN_STOP; break;
         case WD_MENU_GPS: ui->screen=WD_SCREEN_GPS; ui->gps_page=0; break;
         case WD_MENU_API: api_open(WD_SCREEN_MAIN); break;
@@ -749,6 +750,8 @@ static void draw(uint64_t now,poom_gps_fix_t f) {
     const char *title="WARDRIVE";
     switch(ui->screen) {
         case WD_SCREEN_STOP:title="STOP SESSION?";break;
+        case WD_SCREEN_BACKGROUND:title=ui->session.paused?"SESSION PAUSED":"SESSION CONTINUES";break;
+        case WD_SCREEN_EXIT_SESSION:title="EXIT WARDRIVE?";break;
         case WD_SCREEN_SAVED:title="SAVED SESSIONS";break; case WD_SCREEN_SESSION:title="SESSION";break;
         case WD_SCREEN_UPLOAD_CHOICE:title="UPLOAD SESSION";break; case WD_SCREEN_TRANSFER_FORMAT:title="TRANSFER OVER WIFI";break;
         case WD_SCREEN_OPTIONS:title="ADDITIONAL OPTIONS";break; case WD_SCREEN_NOTICE:title=notice_title();break;
@@ -772,10 +775,19 @@ static void draw(uint64_t now,poom_gps_fix_t f) {
     if(ui->screen!=WD_SCREEN_LIVE&&ui->screen!=WD_SCREEN_GPS&&ui->screen!=WD_SCREEN_STATS) text_at(0,0,title);
     if(ui->screen==WD_SCREEN_MAIN) {
         wd_menu_item_t items[8]; const char *labels[8]; unsigned count=wd_main_menu(ui->session.active,items);
-        for(unsigned i=0;i<count;i++) labels[i]=wd_main_menu_label(items[i],ui->session.active);
+        for(unsigned i=0;i<count;i++) labels[i]=wd_main_menu_label(items[i],ui->session.active,ui->session.paused);
         if(ui->selection>=count) ui->selection=0;
         draw_menu(labels,count,ui->selection,12);
-        line(56,ui->message[0]?ui->message:ui->session.active?"A:SELECT B:EXIT+STOP":"A:SELECT   B:EXIT");
+        line(56,ui->message[0]?ui->message:ui->session.active?"A:SELECT B:EXIT MENU":"A:SELECT   B:EXIT");
+    } else if(ui->screen==WD_SCREEN_BACKGROUND) {
+        line(18,"Wardriving session");
+        line(28,ui->session.paused?"will remain paused":"will continue running");
+        line(38,"in the background."); line(56,"A/B:ACKNOWLEDGE");
+    } else if(ui->screen==WD_SCREEN_EXIT_SESSION) {
+        line(14,"Wardriving session"); line(24,"in progress.");
+        menu_row(36,ui->exit_choice==0,"Save session and exit");
+        menu_row(46,ui->exit_choice==1,"Exit without saving");
+        line(56,"A:SELECT   B:BACK");
     } else if(ui->screen==WD_SCREEN_LIVE) draw_live(now,f);
     else if(ui->screen==WD_SCREEN_GPS) draw_gps(now,f);
     else if(ui->screen==WD_SCREEN_STATS) draw_stats(now);
@@ -956,10 +968,17 @@ static void back_key(void) {
     switch(ui->screen) {
         case WD_SCREEN_MAIN:
             WD_DEBUG("[wardrive UI] exit requested active=%u stopping=%u job=%u\n",(unsigned)ui->session.active,(unsigned)ui->stopping,(unsigned)atomic_load(&ui->job.busy));
-            ui->exiting=true; stop(); return;
+            if(ui->session.active) {
+                if(!ui->stopping) { ui->exit_choice=0; ui->screen=WD_SCREEN_EXIT_SESSION; }
+                return;
+            }
+            ui->exiting=true; return;
         case WD_SCREEN_LIVE: case WD_SCREEN_GPS: case WD_SCREEN_STATS:
             if(ui->screen==WD_SCREEN_GPS) poom_gps_capture_stop(&ui->gps_capture);
-            ui->screen=wd_ui_session_back(ui->screen); ui->selection=0; ui->raw=false; ui->message[0]=0; return;
+            ui->screen=ui->session.active?WD_SCREEN_BACKGROUND:wd_ui_session_back(ui->screen);
+            ui->selection=0; ui->raw=false; ui->message[0]=0; return;
+        case WD_SCREEN_BACKGROUND: case WD_SCREEN_EXIT_SESSION:
+            ui->screen=WD_SCREEN_MAIN; ui->selection=0; return;
         case WD_SCREEN_STOP: ui->screen=ui->stop_return; return;
         case WD_SCREEN_SAVED:
             wd_session_cache_close(&ui->saved_cache);
@@ -987,6 +1006,7 @@ static void back_key(void) {
     }
 }
 static void key_press(uint8_t key,poom_gps_fix_t f,uint64_t now) {
+    if(ui->stopping) return; /* Confirmed stop/exit owns the session until drained. */
     if(ui->screen==WD_SCREEN_WORKING||ui->screen==WD_SCREEN_PROGRESS) { if(key==BUTTON_B) atomic_store(&ui->job.cancel,true); return; }
     if(ui->screen==WD_SCREEN_FILE_RESULT||ui->screen==WD_SCREEN_ARCHIVE_RESULT) { file_result_key(key); return; }
     if(ui->screen==WD_SCREEN_WIFI_SAVE) { profile_save_key(key); return; }
@@ -1001,6 +1021,19 @@ static void key_press(uint8_t key,poom_gps_fix_t f,uint64_t now) {
             else if(ui->edit_field==8) { snprintf(ui->credentials.api_name,sizeof(ui->credentials.api_name),"%.64s",ui->edit); api_saved("API name saved"); }
             else if(ui->edit_field==9) { snprintf(ui->credentials.api_token,sizeof(ui->credentials.api_token),"%.128s",ui->edit); api_saved("API token saved"); }
             memset(ui->edit,0,sizeof(ui->edit)); ui->screen=ui->edit_return_screen;
+        }
+        return;
+    }
+    if(ui->screen==WD_SCREEN_BACKGROUND) {
+        if(key==BUTTON_A||key==BUTTON_B) { ui->screen=WD_SCREEN_MAIN; ui->selection=0; }
+        return;
+    }
+    if(ui->screen==WD_SCREEN_EXIT_SESSION) {
+        if(key==BUTTON_B) { ui->screen=WD_SCREEN_MAIN; ui->selection=0; }
+        else if(key==BUTTON_UP||key==BUTTON_DOWN) ui->exit_choice^=1;
+        else if(key==BUTTON_A&&!ui->stopping) {
+            ui->discard_on_exit=ui->exit_choice==1;
+            ui->exiting=true; stop(); ui->screen=WD_SCREEN_LIVE;
         }
         return;
     }
@@ -1106,6 +1139,22 @@ static void input_event(wd_key_event_t key,poom_gps_fix_t f,uint64_t now) {
     if(ui->suppress_click[key.button]) { ui->suppress_click[key.button]=false; return; }
     key_press(key.button,f,now);
 }
+static void finish_recording(uint64_t now) {
+    if(ui->stopping&&wd_radio_finished()) {
+        ui->session.ended_ms=now;
+        bool discard=ui->discard_on_exit;
+        bool saved=discard?wd_session_discard(&ui->session):wd_session_stop(&ui->session); wd_radio_release(); ui->stopping=false; ui->screen=WD_SCREEN_MAIN; ui->selection=0; wd_hold_cancel(&ui->hold);
+        WD_DEBUG("[wardrive session] saved=%u discarded=%u observations=%lu wifi=%lu ble=%lu errors=%lu directory=%s\n",
+            (unsigned)(saved&&!discard),(unsigned)(saved&&discard),(unsigned long)ui->session.observations,(unsigned long)ui->session.wifi_count,
+            (unsigned long)ui->session.ble_count,(unsigned long)ui->session.write_errors,ui->session.directory);
+        if(!saved) {
+            ui->exiting=false;
+            strcpy(ui->message,discard?"DISCARD FAILED":"SD ERROR: RECOVER LOG");
+        }
+        ui->discard_on_exit=false;
+        WD_DEBUG("[wardrive] stop radio_stack_free=%u ui_stack_free=%u heap=%lu largest=%lu\n",wd_radio_stack_free(),(unsigned)uxTaskGetStackHighWaterMark(NULL),(unsigned long)esp_get_free_heap_size(),(unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    }
+}
 static void task(void *ctx) {
     (void)ctx; wd_settings_default(&ui->settings);
     size_t settings_len=sizeof(ui->settings);
@@ -1152,15 +1201,7 @@ static void task(void *ctx) {
         for(unsigned i=0;i<16&&wd_radio_next(&o);i++) {
             if(ui->session.active&&!ui->session.paused&&!ui->session.fault&&!wd_session_observe(&ui->session,&o)) { stop(); strcpy(ui->message,"SD FAULT: KEPT LOG"); }
         }
-        if(ui->stopping&&wd_radio_finished()) {
-            ui->session.ended_ms=now;
-            bool saved=wd_session_stop(&ui->session); wd_radio_release(); ui->stopping=false; ui->screen=WD_SCREEN_MAIN; ui->selection=0; wd_hold_cancel(&ui->hold);
-            WD_DEBUG("[wardrive session] saved=%u observations=%lu wifi=%lu ble=%lu errors=%lu directory=%s\n",
-                (unsigned)saved,(unsigned long)ui->session.observations,(unsigned long)ui->session.wifi_count,
-                (unsigned long)ui->session.ble_count,(unsigned long)ui->session.write_errors,ui->session.directory);
-            if(!saved) strcpy(ui->message,"SD ERROR: RECOVER LOG");
-            WD_DEBUG("[wardrive] stop radio_stack_free=%u ui_stack_free=%u heap=%lu largest=%lu\n",wd_radio_stack_free(),(unsigned)uxTaskGetStackHighWaterMark(NULL),(unsigned long)esp_get_free_heap_size(),(unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-        }
+        finish_recording(now);
         wd_key_event_t key;
         while(xQueueReceive(buttons,&key,0)==pdTRUE) input_event(key,f,now);
         if(wd_hold_poll(&ui->hold,ui->screen,now)) hold_fired(now);

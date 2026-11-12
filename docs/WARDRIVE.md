@@ -12,11 +12,28 @@ WiFi Upload Settings and Additional Settings. UP/DOWN selects, A opens and
 B returns. Additional Settings selects Wi-Fi, BLE or combined collection,
 scan timing, minimum RSSI, repeat interval and local time zone.
 
-Start Wardrive creates a new session. Hold A on the live screen to pause or
-resume; LEFT/RIGHT cycles the live, GPS and statistics pages. GPS UP/DOWN
-cycles its detail pages. B returns to the Wardrive menu while recording
-continues. Stop Session, or hold B on a live page, to stop. B from the main
-Wardrive menu exits and stops any remaining session.
+Start Wardrive creates a new session. Hold A on the live screen for two
+seconds to pause or resume; LEFT/RIGHT cycles the live, GPS and statistics
+pages. GPS UP/DOWN cycles its detail pages.
+
+B from a live page shows "Wardriving session will continue running in the
+background"; A or B acknowledges and opens the Wardrive menu. A paused session
+instead says it will remain paused. Navigation does not pause, resume or
+stop recording. The top menu item is **Resume Active Session** while recording
+and **Resume Paused Session** while paused. Selecting the former returns to
+the live screen; selecting the latter explicitly resumes recording.
+
+Stop Session, or hold B on a live page, opens the existing save/stop
+confirmation. B from the main Wardrive menu while an active or paused session
+exists opens **Wardriving session in progress.** UP/DOWN selects:
+
+- **Save session and exit** (default): stop the radios, save the recording and exit.
+- **Exit without saving**: stop the radios and discard only the current recording.
+
+A confirms the selected action; B cancels and returns to the Wardrive menu
+with the recording/paused state intact. Saved sessions are not deleted by
+these choices. An SD save/discard failure stays in Wardrive and displays an
+error. Without a session, B exits directly.
 
 Combined mode alternates a passive Wi-Fi sweep and a passive BLE window,
 tearing down each owned radio between phases. It does not scan both radios

@@ -162,3 +162,26 @@ adapter; then flash and attach the monitor with `--no-reset`. Repeat Net Scanner
 audit/exit -> Wardrive Wi-Fi + BLE -> stop/exit. Confirm both device counts,
 `saved=1`, `errors=0`, `radio_error=0x0` and return to the responsive main menu,
 without repeated `deinit=0x5001` messages.
+
+
+### Protected background navigation and exit choices
+
+B from live/GPS/statistics pages now opens a background-recording notice;
+either A or B acknowledges it without changing pause or radio state. A paused
+session gets an accurate "will remain paused" message. The main menu labels
+are "Resume Active Session" and "Resume Paused Session"; selecting the paused
+entry explicitly resumes recording.
+
+B from the main Wardrive menu with any active/paused session opens an exit
+warning. "Save session and exit" is selected by default on every entry.
+UP/DOWN changes the selection and A confirms. B cancels with state unchanged.
+"Exit without saving" closes/discards only the current recorder's files after
+radio completion; saved sessions are preserved. SD failures keep the user in
+Wardrive with an error. Existing hold-B save/stop confirmation remains available.
+
+Regression coverage includes both notice acknowledgement buttons, background
+navigation from all three live pages, active-time continuity, paused/resumed
+labels, exit-warning cancellation/default reset, radio-drain ordering, both exit
+choices, SD failures, real current-session deletion and preservation of prior
+sessions and unknown files. Verify the new flow on hardware, using a disposable
+recording to test discard and checking the main menu remains responsive.
