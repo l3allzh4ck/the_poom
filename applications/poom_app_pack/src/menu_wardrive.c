@@ -954,7 +954,9 @@ static void draw(uint64_t now,poom_gps_fix_t f) {
 /* Short B: go back one level. */
 static void back_key(void) {
     switch(ui->screen) {
-        case WD_SCREEN_MAIN: ui->exiting=true; stop(); return;
+        case WD_SCREEN_MAIN:
+            WD_DEBUG("[wardrive UI] exit requested active=%u stopping=%u job=%u\n",(unsigned)ui->session.active,(unsigned)ui->stopping,(unsigned)atomic_load(&ui->job.busy));
+            ui->exiting=true; stop(); return;
         case WD_SCREEN_LIVE: case WD_SCREEN_GPS: case WD_SCREEN_STATS:
             if(ui->screen==WD_SCREEN_GPS) poom_gps_capture_stop(&ui->gps_capture);
             ui->screen=wd_ui_session_back(ui->screen); ui->selection=0; ui->raw=false; ui->message[0]=0; return;
@@ -1113,8 +1115,19 @@ static void task(void *ctx) {
     ui->transfer_on=false; ui->offer_wifi_save=false; ui->wifi_purpose=WD_JOB_TRANSFER; ui->upload_row=0; ui->setup_imported=false;
     poom_gps_service_init(&ui->gps,poom_gps_xa1110()); ui->gps.diagnostic=diagnostic;
     WD_DEBUG("[wardrive] enter heap=%lu largest=%lu\n",(unsigned long)esp_get_free_heap_size(),(unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+#if defined(CONFIG_POOM_WARDRIVE_DIAGNOSTICS) && CONFIG_POOM_WARDRIVE_DIAGNOSTICS
+    uint64_t last_stop_trace=0;
+#endif
     while(!ui->exiting||ui->session.active||atomic_load(&ui->job.busy)) {
         uint64_t now=esp_timer_get_time()/1000;
+#if defined(CONFIG_POOM_WARDRIVE_DIAGNOSTICS) && CONFIG_POOM_WARDRIVE_DIAGNOSTICS
+        if((ui->stopping||ui->exiting)&&now-last_stop_trace>=1000) {
+            last_stop_trace=now;
+            WD_DEBUG("[wardrive UI] waiting active=%u stopping=%u radio_finished=%u radio_error=0x%x job=%u\n",
+                (unsigned)ui->session.active,(unsigned)ui->stopping,(unsigned)wd_radio_finished(),
+                (unsigned)wd_radio_error(),(unsigned)atomic_load(&ui->job.busy));
+        }
+#endif
         poom_gps_capture_poll(&ui->gps_capture,now);
         /* Drain up to the receiver's 256-byte stream budget between OLED
          * frames; one 32-byte read per frame cannot keep up at 100 kHz. */
@@ -1153,8 +1166,10 @@ static void task(void *ctx) {
         if(wd_hold_poll(&ui->hold,ui->screen,now)) hold_fired(now);
         draw(now,f); vTaskDelay(pdMS_TO_TICKS(40));
     }
+    WD_DEBUG("[wardrive UI] exit loop complete; closing GPS\n");
     poom_gps_capture_stop(&ui->gps_capture);
     poom_gps_service_close(&ui->gps);
+    WD_DEBUG("[wardrive UI] releasing radios\n");
     wd_ui_disconnect(); wd_radio_release();
     /* Never hand the menu back while a Wardrive radio cleanup is incomplete. */
     while(!wd_radio_quiescent()) {
@@ -1169,6 +1184,7 @@ static void task(void *ctx) {
     if(ui->mounted_here) sd_card_unmount();
     portENTER_CRITICAL(&button_lock); QueueHandle_t old_buttons=buttons; buttons=NULL; portEXIT_CRITICAL(&button_lock);
     vQueueDelete(old_buttons); ui_free(); atomic_store(&visible,false);
+    WD_DEBUG("[wardrive UI] cleanup complete; resuming main menu\n");
     uint8_t token=1; poom_sbus_publish("poom/menu/resume",&token,sizeof(token),0);
     vTaskDelete(NULL);
 }

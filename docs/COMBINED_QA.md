@@ -94,3 +94,37 @@ WARDRIVE_ISOLATION_BASE=9f73d3ff3b6e2143a61e7f1ba4d700323b1a7785 \
 Hardware QA and flashing are performed locally by the owner; the cloud build
 and host tests do not establish hardware acceptance. Capture any crash/backtrace
 and the preceding heap lines, plus the step that triggered it.
+
+## Wardrive transition investigation
+
+Owner hardware QA confirmed repeated Net Scanner discovery/audit and SD report
+saving. Wardrive subsequently appeared to collect no BLE reports and became
+unresponsive while leaving the app. The supplied console log only contained
+scanner traces; it does not establish the BLE failure stage or internal heap
+headroom. Combined hardware acceptance remains blocked.
+
+`sdkconfig.qa_diagnostics` enables the existing opt-in Wardrive diagnostics.
+Additional stage traces bracket BLE initialization and teardown SDK calls,
+report internal/DMA heap and largest internal block, show worker suspension
+and release, and report UI stop/exit wait state. These are diagnostic changes,
+not a claimed fix. They do not forcibly terminate radio tasks or change stock
+radio ownership, TLS, partitions or the release memory profile.
+
+Update this QA branch and use the pinned SDK with a fresh build/configuration:
+
+```powershell
+git pull --ff-only
+$buildDir = "build-quality-diagnostics"
+python "$env:IDF_PATH/tools/idf.py" -B $buildDir -D IDF_TARGET=esp32c5 "-DSDKCONFIG=$buildDir/sdkconfig" "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.net_scanner_release;sdkconfig.qa_diagnostics" build size
+# After successful build/size checks, using your device's COM port:
+python "$env:IDF_PATH/tools/idf.py" -B $buildDir -p COM5 flash
+python "$env:IDF_PATH/tools/idf.py" -B $buildDir -p COM5 monitor --no-reset
+```
+
+After power-cycling and attaching the monitor without reset, first test
+Wardrive BLE-only recording/stop/exit from a fresh boot. Then repeat the same
+Wardrive test after a Net Scanner audit/report/exit. Keep a known BLE advertiser
+nearby and capture the full `[wardrive ...]` output, selected mode, whether the
+radio ever starts, and whether stopping recording or leaving the app triggers
+the failure. Avoid automatic monitor resets: the owner reported a separate
+monitor/reset interaction, with no-reset attachment working after reconnect.

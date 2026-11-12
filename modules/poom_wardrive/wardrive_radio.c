@@ -119,6 +119,7 @@ static void task(void *ctx) {
 #ifdef ESP_PLATFORM
             heap=esp_get_free_heap_size(); dma=heap_caps_get_free_size(MALLOC_CAP_DMA|MALLOC_CAP_INTERNAL);
 #endif
+            WD_DEBUG("[wardrive radio] BLE window begin mode=%u stopping=%u\n",(unsigned)config.mode,(unsigned)atomic_load(&stopping));
             esp_err_t e=wd_ble_start(ble_report);
             if(e==ESP_OK) wait_ms(config.ble_window_ms); else atomic_store(&error_code,e);
             esp_err_t stopped=wd_ble_stop();
@@ -132,6 +133,7 @@ static void task(void *ctx) {
         atomic_store(&stack_free,uxTaskGetStackHighWaterMark(NULL));
         wait_ms(config.mode==WD_BLE?100:config.wifi_interval_ms);
     }
+    WD_DEBUG("[wardrive radio] worker finishing error=0x%x\n",(unsigned)atomic_load(&error_code));
     atomic_store(&running,false); task_exit(lp);
 }
 /* ESP32-C5: Bluetooth's controller and Bluedroid take ~42 KiB of DMA-capable
@@ -184,7 +186,10 @@ bool wd_radio_start(const wd_settings_t *settings) {
     return true;
 }
 void wd_radio_pause(bool p) { atomic_store(&paused,p); }
-void wd_radio_stop(void) { atomic_store(&stopping,true); }
+void wd_radio_stop(void) {
+    WD_DEBUG("[wardrive radio] stop requested running=%u\n",(unsigned)atomic_load(&running));
+    atomic_store(&stopping,true);
+}
 bool wd_radio_finished(void) { return !atomic_load(&running); }
 bool wd_radio_next(wd_observation_t *o) { return reports&&xQueueReceive(reports,o,0)==pdTRUE; }
 uint32_t wd_radio_dropped(void) { return atomic_load(&lost); }
@@ -194,12 +199,15 @@ void wd_radio_release(void) {
     if(!atomic_load(&running)) {
 #ifdef ESP_PLATFORM
         if(worker_handle) {
+            WD_DEBUG("[wardrive radio] waiting for worker suspension\n");
             while(eTaskGetState(worker_handle)!=eSuspended) vTaskDelay(1);
+            WD_DEBUG("[wardrive radio] deleting suspended worker\n");
             if(stack_lp) vTaskDeleteWithCaps(worker_handle);
             else vTaskDelete(worker_handle);
             worker_handle=NULL;
         }
 #endif
+        WD_DEBUG("[wardrive radio] release adapters\n");
         if(wd_ble_stop()!=ESP_OK) return;
         if(wd_wifi_owned() && wd_wifi_deinit()!=ESP_OK) return;
         if(reports) queue_delete();

@@ -1,0 +1,2 @@
+# Optional combined-QA traces; keeps the release memory profile unchanged.
+CONFIG_POOM_WARDRIVE_DIAGNOSTICS=y
