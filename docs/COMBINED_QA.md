@@ -8,8 +8,8 @@ It combines upstream 1.0.16 with:
 - Wardrive PR #50: `41509ed293d0751b090c800b99448810d4a9a7c2`.
 
 Shared menu conflicts were resolved by retaining all entries. Device Inspector
-and Wi-Fi Guard remain included. PR #49 and #50 production feature code is unmodified
-except shared integration files. The unpublished detector-dual-band feature
+and Wi-Fi Guard remain included. The handshake production feature code is unmodified. Wardrive additionally
+carries the borrowed-interface DNS restoration fix documented below. The unpublished detector-dual-band feature
 branch is not part of these two PRs and is not included.
 
 Use the SDK and opt-in memory profile in NET_SCANNER_BUILD.md. No changes to
@@ -128,3 +128,37 @@ nearby and capture the full `[wardrive ...]` output, selected mode, whether the
 radio ever starts, and whether stopping recording or leaving the app triggers
 the failure. Avoid automatic monitor resets: the owner reported a separate
 monitor/reset interaction, with no-reset attachment working after reconnect.
+
+### Reproduced combined-mode cleanup failure and fix
+
+Owner logs confirmed a successful combined session before Net Scanner (23 Wi-Fi
+and 20 BLE devices). After the scanner audit, combined mode stopped with
+`radio_error=0x5001`, saved 10 Wi-Fi devices and no BLE devices, then repeatedly
+retried Wi-Fi cleanup on exit. This run is not hardware acceptance.
+
+The pinned SDK returns `ESP_ERR_ESP_NETIF_INVALID_PARAMS` (0x5001) when
+`esp_netif_set_dns_info` is given an empty address. Wardrive snapshots DNS from
+an existing station interface, including legitimately empty backup/fallback
+slots. Restoring those empty slots retained the borrowed-interface ownership
+flag indefinitely, preventing subsequent BLE windows and completion of exit.
+The previous host mock accepted empty DNS entries and missed this failure.
+
+The QA fix skips empty DNS slots: the pinned SDK's IP restoration already
+clears main/backup DNS, while DHCP preserves fallback and Wardrive does not
+change it. Populated entries are restored after restarting the previous DHCP
+client, since that restart also clears main/backup DNS. Genuine restoration
+errors still retain ownership for retry; no cleanup errors are masked and no
+foreign interface is destroyed.
+
+The updated SDK-faithful regression failed before the fix and passes afterward.
+Coverage includes empty DNS, populated main with empty backup/fallback, repeated
+borrowed-interface cycles, populated static DNS, and a genuine restore failure
+followed by retry. Radio ownership/rollback tests, the Wardrive host suite and
+the pinned ESP32-C5 diagnostic firmware build pass. Owner retest remains pending.
+
+Keep the diagnostic build configuration for the retest. After updating this
+branch, `idf.py -B build-quality-diagnostics build size` rebuilds the changed
+adapter; then flash and attach the monitor with `--no-reset`. Repeat Net Scanner
+audit/exit -> Wardrive Wi-Fi + BLE -> stop/exit. Confirm both device counts,
+`saved=1`, `errors=0`, `radio_error=0x0` and return to the responsive main menu,
+without repeated `deinit=0x5001` messages.

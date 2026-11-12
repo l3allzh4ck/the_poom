@@ -29,7 +29,8 @@ typedef struct { struct { unsigned char ssid[32],password[64]; struct { int auth
 enum { ESP_NETIF_DNS_MAX=3, ESP_NETIF_DHCP_STARTED=1 };
 typedef int esp_netif_dns_type_t;
 typedef int esp_netif_dhcp_status_t;
-typedef struct { unsigned marker; } esp_netif_dns_info_t;
+typedef struct { struct { uint32_t addr; } ip; } esp_netif_dns_info_t;
+#define ESP_IP_IS_ANY(ip) ((ip).addr == 0)
 typedef struct { unsigned addr; } esp_ip4_addr_t;
 typedef struct { esp_ip4_addr_t ip,netmask,gw; } esp_netif_ip_info_t;
 typedef struct { int identity; } esp_netif_t;
@@ -65,6 +66,9 @@ static bool driver, external_driver, existing_netif, existing_loop, cleanup_fail
 static unsigned inits,deinits,stops,created,destroyed,registered,unregistered,loops_deleted;
 static esp_netif_t original={1}, own={2};
 static esp_netif_t *default_netif=&original;
+static uint32_t dns_servers[3];
+static bool dhcp_started=true,dns_restore_failure;
+static unsigned dns_sets;
 static int fail(void) { return ++step==failure ? ESP_FAIL : ESP_OK; }
 static int esp_bt_controller_get_status(void) { return ctrl; }
 static int esp_wifi_get_mode(int *m) { (void)m; return driver||external_driver?ESP_OK:ESP_ERR_WIFI_NOT_INIT; }
@@ -77,12 +81,14 @@ static esp_netif_t *esp_netif_get_handle_from_ifkey(const char *k) { assert(!str
 static esp_netif_t *esp_netif_create_default_wifi_sta(void) { created++;default_netif=&own;return &own; }
 static void esp_netif_destroy_default_wifi(esp_netif_t *n) { assert(n==&own);destroyed++; }
 static int esp_netif_get_ip_info(esp_netif_t *n,esp_netif_ip_info_t *i) { assert(n);memset(i,0,sizeof(*i));return ESP_OK; }
-static int esp_netif_set_ip_info(esp_netif_t *n,const esp_netif_ip_info_t *i) { assert(n&&i);return ESP_OK; }
-static int esp_netif_get_dns_info(esp_netif_t *n,int type,esp_netif_dns_info_t *i) { assert(n&&type<3);i->marker=type;return ESP_OK; }
-static int esp_netif_set_dns_info(esp_netif_t *n,int type,const esp_netif_dns_info_t *i) { assert(n&&i->marker==(unsigned)type);return ESP_OK; }
-static int esp_netif_dhcpc_get_status(esp_netif_t *n,int *status) { assert(n);*status=1;return ESP_OK; }
-static int esp_netif_dhcpc_stop(esp_netif_t *n) { assert(n);return ESP_OK; }
-static int esp_netif_dhcpc_start(esp_netif_t *n) { assert(n);return ESP_OK; }
+static int esp_netif_set_ip_info(esp_netif_t *n,const esp_netif_ip_info_t *i) { assert(n&&i&&!dhcp_started);dns_servers[0]=dns_servers[1]=0;return ESP_OK; }
+static int esp_netif_get_dns_info(esp_netif_t *n,int type,esp_netif_dns_info_t *i) { assert(n&&type<3);i->ip.addr=dns_servers[type];return ESP_OK; }
+/* The pinned SDK rejects an empty DNS address, rather than clearing it. */
+static int esp_netif_set_dns_info(esp_netif_t *n,int type,const esp_netif_dns_info_t *i) { assert(n&&type<3&&i);if(!i->ip.addr)return 0x5001;if(dns_restore_failure){dns_restore_failure=false;return ESP_FAIL;}dns_servers[type]=i->ip.addr;dns_sets++;return ESP_OK; }
+static int esp_netif_dhcpc_get_status(esp_netif_t *n,int *status) { assert(n);*status=dhcp_started?1:0;return ESP_OK; }
+static int esp_netif_dhcpc_stop(esp_netif_t *n) { assert(n);dhcp_started=false;return ESP_OK; }
+/* SDK DHCP restart also clears main/backup DNS, preserving fallback. */
+static int esp_netif_dhcpc_start(esp_netif_t *n) { assert(n);dhcp_started=true;dns_servers[0]=dns_servers[1]=0;return ESP_OK; }
 static int esp_wifi_init(const wifi_init_config_t *c) { assert(c->marker==99);int e=fail();if(!e){driver=true;inits++;}return e; }
 static int esp_wifi_deinit(void) { assert(driver);if(cleanup_failure){cleanup_failure=false;return ESP_FAIL;}driver=false;deinits++;return ESP_OK; }
 static int esp_wifi_scan_stop(void) { return ESP_OK; }
@@ -118,7 +124,30 @@ int main(void) {
     unsigned old_created=created, old_deleted=loops_deleted;
     assert(wd_wifi_init_sta()==ESP_OK&&wd_wifi_deinit()==ESP_OK);
     assert(created==old_created&&loops_deleted==old_deleted&&default_netif==&original);
-    puts("Private WiFi: external-owner protection, partial-init rollback, netif/handler/loop ownership and repeat cleanup passed");
+    assert(!wd_wifi_owned()&&dhcp_started&&dns_sets==0);
+    /* Borrowed post-scanner interface: only main DNS is populated; blank
+     * backup/fallback must not cause 0x5001 or a permanent cleanup retry. */
+    dns_servers[0]=0x08080808;dns_servers[1]=dns_servers[2]=0;
+    for(unsigned cycle=0;cycle<3;cycle++) {
+        step=0;assert(wd_wifi_init_sta()==ESP_OK);
+        dns_servers[0]=0x01010101;dns_servers[1]=0x09090909;
+        assert(wd_wifi_deinit()==ESP_OK&&!wd_wifi_owned());
+        assert(dns_servers[0]==0x08080808&&dns_servers[1]==0&&dns_servers[2]==0&&dhcp_started);
+    }
+    /* Retain a full static DNS snapshot and a stopped DHCP client. */
+    dhcp_started=false;dns_servers[0]=1;dns_servers[1]=2;dns_servers[2]=3;
+    step=0;assert(wd_wifi_init_sta()==ESP_OK);
+    dns_servers[0]=4;dns_servers[1]=5;
+    assert(wd_wifi_deinit()==ESP_OK&&!wd_wifi_owned()&&!dhcp_started);
+    assert(dns_servers[0]==1&&dns_servers[1]==2&&dns_servers[2]==3);
+    /* Genuine restoration errors must still retain ownership for retry. */
+    step=0;assert(wd_wifi_init_sta()==ESP_OK);
+    dns_restore_failure=true;
+    assert(wd_wifi_deinit()==ESP_FAIL&&wd_wifi_owned());
+    assert(wd_wifi_deinit()==ESP_OK&&!wd_wifi_owned());
+    assert(dns_servers[0]==1&&dns_servers[1]==2&&dns_servers[2]==3);
+    assert(created==old_created&&loops_deleted==old_deleted);
+    puts("Private WiFi: ownership, rollback, repeated cleanup and pinned-SDK empty/populated DNS restoration passed");
 }
 '''
 
@@ -179,7 +208,7 @@ int main(void) {
 
 headers = ["esp_err.h", "poom_wifi_ctrl.h", "esp_event.h", "esp_netif.h", "esp_wifi.h",
            "esp_wifi_default.h", "esp_bt.h", "esp_bt_main.h", "esp_gap_ble_api.h",
-           "freertos/FreeRTOS.h", "freertos/semphr.h"]
+           "freertos/FreeRTOS.h", "freertos/semphr.h", "lwip/ip_addr.h"]
 with tempfile.TemporaryDirectory(prefix="wardrive-lifecycle-") as tmp:
     root = Path(tmp)
     (root / "common.h").write_text(COMMON)

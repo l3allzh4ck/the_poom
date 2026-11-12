@@ -6,6 +6,7 @@
 #include "esp_netif.h"
 #include "esp_wifi_default.h"
 #include "esp_bt.h"
+#include "lwip/ip_addr.h" /* ESP_IP_IS_ANY needs the lwIP address predicates. */
 #include <stdatomic.h>
 #include <string.h>
 static bool owned, loop_owned, netif_owned, wifi_handler, ip_handler;
@@ -75,12 +76,19 @@ esp_err_t wd_wifi_deinit(void)
         (void)esp_netif_dhcpc_stop(station);
         result = esp_netif_set_ip_info(station, &previous_ip);
         if(result != ESP_OK) return result;
-        for(unsigned i=0;i<ESP_NETIF_DNS_MAX;i++) {
-            result = esp_netif_set_dns_info(station, (esp_netif_dns_type_t)i, &previous_dns[i]);
-            if(result != ESP_OK) return result;
-        }
         if(previous_dhcp == ESP_NETIF_DHCP_STARTED) {
             result = esp_netif_dhcpc_start(station);
+            if(result != ESP_OK) return result;
+        }
+        /* The release SDK clears main/backup DNS when setting the station IP
+         * and restarting DHCP. Restore populated entries AFTER those calls.
+         * It rejects an empty address with 0x5001; empty main/backup slots
+         * are already cleared, and fallback is never changed by our DHCP
+         * client. Reapplying an empty snapshot would strand ownership and
+         * make every later cleanup/combined-radio window retry forever. */
+        for(unsigned i=0;i<ESP_NETIF_DNS_MAX;i++) {
+            if(ESP_IP_IS_ANY(previous_dns[i].ip)) continue;
+            result = esp_netif_set_dns_info(station, (esp_netif_dns_type_t)i, &previous_dns[i]);
             if(result != ESP_OK) return result;
         }
         borrowed_snapshot = false;
