@@ -3,7 +3,7 @@
 This integration branch is for hardware QA before submitting Security Audit.
 It combines upstream 1.0.16 with:
 
-- Prepared Security Audit: `9f73d3ff3b6e2143a61e7f1ba4d700323b1a7785`.
+- Prepared Security Audit: `d7385e040581ce12f00223523c97f460e45e7a84`.
 - Handshake cracker PR #49: `58bc6c08792308fa6453f347735bea35f04aac35`.
 - Wardrive PR #50: `41509ed293d0751b090c800b99448810d4a9a7c2`.
 
@@ -214,3 +214,35 @@ ESP32-C6 coverage or a new on-device handshake-engine test.
 The DNS cleanup fix and navigation changes remain on this QA branch. They have
 not yet been applied to the separate draft Wardrive PR #50 branch, and no Net
 Scanner PR was opened as part of this hardware-test update.
+
+
+### Security Audit naming
+
+The application is now **Security Audit**, with **SECURITY AUDIT** in the menu
+and screen titles. The report heading and serial prefix (`[security_audit]`)
+use the same name. The UI source/header, headless component/API, documentation,
+host-check directory and release profile have been renamed consistently:
+`menu_security_audit`, `poom_security_audit`, `docs/SECURITY_AUDIT*.md`,
+`tools/security_audit_hostcheck` and `sdkconfig.security_audit_release`.
+
+The standalone upstream feature branch is `feature/security-audit-pr-1.0.16`;
+the combined QA branch is also published as `integration/security-audit-quality-check`.
+The original source branch and existing QA checkout history are preserved.
+Stock Scan Net remains a separate application.
+
+The six sanitizer suites, GCC/Clang compile checks, harness-failure tests,
+synthetic handshake test, Wardrive suite and both pinned ESP32-C5 firmware
+builds pass after the rename. Hardware verification above covers the pre-rename
+feature behavior; smoke-test the new menu/title, audit/report and return to
+Wardrive before opening the upstream PR.
+
+An existing QA build directory must update its cached defaults path once:
+
+```powershell
+git pull --ff-only
+$buildDir = "build-quality-diagnostics"
+python "$env:IDF_PATH/tools/idf.py" -B $buildDir "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.security_audit_release;sdkconfig.qa_diagnostics" reconfigure build size
+```
+
+After a successful build, use the same build directory for flash and monitor
+with `--no-reset`. No partition or release memory-setting change is required.
