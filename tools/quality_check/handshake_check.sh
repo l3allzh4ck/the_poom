@@ -27,6 +27,6 @@ pmkid=hmac.new(pmk,b'PMK Name'+ap+sta,'sha1').digest()[:16]
 PY
 ${CC:-cc} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-unused-variable \
     -fsanitize=address,undefined -I"$T" -Iapplications/poom_app_pack/include \
-    -Itools/net_scanner_hostcheck/stubs tools/quality_check/test_handshake.c \
+    -Itools/security_audit_hostcheck/stubs tools/quality_check/test_handshake.c \
     applications/poom_app_pack/src/poom_handshake_crack.c -o "$T/test"
 "$T/test" "$T/synthetic.22000" "$T/words.txt" "$T/invalid.22000"

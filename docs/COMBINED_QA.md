@@ -1,9 +1,9 @@
 # Combined ESP32-C5 quality check
 
-This integration branch is for hardware QA before submitting Net Scanner.
+This integration branch is for hardware QA before submitting Security Audit.
 It combines upstream 1.0.16 with:
 
-- Prepared Net Scanner: `9f73d3ff3b6e2143a61e7f1ba4d700323b1a7785`.
+- Prepared Security Audit: `9f73d3ff3b6e2143a61e7f1ba4d700323b1a7785`.
 - Handshake cracker PR #49: `58bc6c08792308fa6453f347735bea35f04aac35`.
 - Wardrive PR #50: `41509ed293d0751b090c800b99448810d4a9a7c2`.
 
@@ -12,16 +12,16 @@ and Wi-Fi Guard remain included. The handshake production feature code is unmodi
 carries the borrowed-interface DNS restoration fix documented below. The unpublished detector-dual-band feature
 branch is not part of these two PRs and is not included.
 
-Use the SDK and opt-in memory profile in NET_SCANNER_BUILD.md. No changes to
+Use the SDK and opt-in memory profile in SECURITY_AUDIT_BUILD.md. No changes to
 partitions, upstream defaults or dependency versions are required. This is a
-combined test image; the upstream Net Scanner PR should stay feature-scoped.
+combined test image; the upstream Security Audit PR should stay feature-scoped.
 
 ## Local PowerShell build and flash
 
 From an existing repository in an ESP-IDF PowerShell terminal:
 
 ```powershell
-git fetch https://github.com/l3allzh4ck/the_poom.git integration/net-scanner-quality-check
+git fetch https://github.com/l3allzh4ck/the_poom.git integration/security-audit-quality-check
 git worktree add --detach ../poom-quality-check FETCH_HEAD
 Set-Location ../poom-quality-check
 git submodule update --init --recursive
@@ -32,7 +32,7 @@ if ((git -C "$env:IDF_PATH" rev-parse HEAD).Trim() -ne $expectedIdf) {
 }
 
 $buildDir = "build-quality-release"
-python "$env:IDF_PATH/tools/idf.py" -B $buildDir -D IDF_TARGET=esp32c5 "-DSDKCONFIG=$buildDir/sdkconfig" "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.net_scanner_release" reconfigure build size
+python "$env:IDF_PATH/tools/idf.py" -B $buildDir -D IDF_TARGET=esp32c5 "-DSDKCONFIG=$buildDir/sdkconfig" "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.security_audit_release" reconfigure build size
 # Continue only if the build and partition-size checks succeed.
 $port = "COM5" # Replace with your POOM port.
 python "$env:IDF_PATH/tools/idf.py" -B $buildDir -p $port flash
@@ -60,15 +60,15 @@ blanked. Confirm successful write verification and boot from this build.
   candidate matching, cancellation and malformed input, under ASan/UBSan.
 
 The original Wardrive isolation test compares shared Wi-Fi helpers with stock
-1.0.16. That deliberately fails in this combined tree because Net Scanner
+1.0.16. That deliberately fails in this combined tree because Security Audit
 already includes its reviewed Wi-Fi initialization cleanup fix. The optional
 `WARDRIVE_ISOLATION_BASE` setting makes the baseline explicit; it defaults to
 stock for standalone Wardrive. For this integration use the prepared scanner
 commit, ensuring Wardrive/handshake add no further protected changes:
 
 ```sh
-sh tools/net_scanner_hostcheck/check.sh
-sh tools/net_scanner_hostcheck/test_harness.sh
+sh tools/security_audit_hostcheck/check.sh
+sh tools/security_audit_hostcheck/test_harness.sh
 sh tools/quality_check/handshake_check.sh
 WARDRIVE_ISOLATION_BASE=9f73d3ff3b6e2143a61e7f1ba4d700323b1a7785 \
   ASAN_OPTIONS=detect_leaks=0 sh tools/wardrive_hostcheck/check.sh
@@ -76,7 +76,7 @@ WARDRIVE_ISOLATION_BASE=9f73d3ff3b6e2143a61e7f1ba4d700323b1a7785 \
 
 ## Hardware checks to record
 
-1. Boot; confirm NET SCANNER, CRACK HS, WARDRIVE, DEVICE INSPECTOR and WIFI
+1. Boot; confirm SECURITY AUDIT, CRACK HS, WARDRIVE, DEVICE INSPECTOR and WIFI
    GUARD are present. Record startup version and PSRAM detection.
 2. On your test LAN, scan/discover, cancel a scan, run audit with and without
    the SD database, save a report, reconnect after offline lookup and exit.
@@ -86,7 +86,7 @@ WARDRIVE_ISOLATION_BASE=9f73d3ff3b6e2143a61e7f1ba4d700323b1a7785 \
    Sessions both ways, reopen details and export CSV. Check download on the
    trusted test network if needed. Do not submit additional WiGLE uploads
    merely to test app transitions.
-5. Repeat Net Scanner -> Wardrive -> BLE -> handshake -> Device Inspector
+5. Repeat Security Audit -> Wardrive -> BLE -> handshake -> Device Inspector
    and back several times. Watch for freezes, allocation failures, stack
    warnings, stale results and failure to reconnect. Compare next-entry heap
    readings, since task stacks can still be held at exit logging time.
@@ -97,7 +97,7 @@ and the preceding heap lines, plus the step that triggered it.
 
 ## Wardrive transition investigation
 
-Owner hardware QA confirmed repeated Net Scanner discovery/audit and SD report
+Owner hardware QA confirmed repeated Security Audit discovery/audit and SD report
 saving. Wardrive subsequently appeared to collect no BLE reports and became
 unresponsive while leaving the app. The supplied console log only contained
 scanner traces; it does not establish the BLE failure stage or internal heap
@@ -115,7 +115,7 @@ Update this QA branch and use the pinned SDK with a fresh build/configuration:
 ```powershell
 git pull --ff-only
 $buildDir = "build-quality-diagnostics"
-python "$env:IDF_PATH/tools/idf.py" -B $buildDir -D IDF_TARGET=esp32c5 "-DSDKCONFIG=$buildDir/sdkconfig" "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.net_scanner_release;sdkconfig.qa_diagnostics" build size
+python "$env:IDF_PATH/tools/idf.py" -B $buildDir -D IDF_TARGET=esp32c5 "-DSDKCONFIG=$buildDir/sdkconfig" "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.security_audit_release;sdkconfig.qa_diagnostics" build size
 # After successful build/size checks, using your device's COM port:
 python "$env:IDF_PATH/tools/idf.py" -B $buildDir -p COM5 flash
 python "$env:IDF_PATH/tools/idf.py" -B $buildDir -p COM5 monitor --no-reset
@@ -123,7 +123,7 @@ python "$env:IDF_PATH/tools/idf.py" -B $buildDir -p COM5 monitor --no-reset
 
 After power-cycling and attaching the monitor without reset, first test
 Wardrive BLE-only recording/stop/exit from a fresh boot. Then repeat the same
-Wardrive test after a Net Scanner audit/report/exit. Keep a known BLE advertiser
+Wardrive test after a Security Audit audit/report/exit. Keep a known BLE advertiser
 nearby and capture the full `[wardrive ...]` output, selected mode, whether the
 radio ever starts, and whether stopping recording or leaving the app triggers
 the failure. Avoid automatic monitor resets: the owner reported a separate
@@ -131,7 +131,7 @@ monitor/reset interaction, with no-reset attachment working after reconnect.
 
 ### Reproduced combined-mode cleanup failure and fix
 
-Owner logs confirmed a successful combined session before Net Scanner (23 Wi-Fi
+Owner logs confirmed a successful combined session before Security Audit (23 Wi-Fi
 and 20 BLE devices). After the scanner audit, combined mode stopped with
 `radio_error=0x5001`, saved 10 Wi-Fi devices and no BLE devices, then repeatedly
 retried Wi-Fi cleanup on exit. This run is not hardware acceptance.
@@ -158,7 +158,7 @@ the pinned ESP32-C5 diagnostic firmware build pass. Owner retest remains pending
 
 Keep the diagnostic build configuration for the retest. After updating this
 branch, `idf.py -B build-quality-diagnostics build size` rebuilds the changed
-adapter; then flash and attach the monitor with `--no-reset`. Repeat Net Scanner
+adapter; then flash and attach the monitor with `--no-reset`. Repeat Security Audit
 audit/exit -> Wardrive Wi-Fi + BLE -> stop/exit. Confirm both device counts,
 `saved=1`, `errors=0`, `radio_error=0x0` and return to the responsive main menu,
 without repeated `deinit=0x5001` messages.
@@ -189,7 +189,7 @@ recording to test discard and checking the main menu remains responsive.
 ### Owner hardware verification — 12 November 2026
 
 The owner reports completing the navigation/save/discard checklist and the
-Net Scanner -> combined Wardrive transition successfully on ESP32-C5, using
+Security Audit -> combined Wardrive transition successfully on ESP32-C5, using
 QA source `166471b`, the pinned release SDK and diagnostics enabled.
 
 The supplied console excerpt independently confirms:
@@ -200,7 +200,7 @@ The supplied console excerpt independently confirms:
   7 Wi-Fi and 18 BLE devices and zero write errors.
 - Both radio workers finished with `error=0x0`, completed teardown, and control
   subsequently reached other applications. No 0x5001 cleanup loop appears.
-- A later Net Scanner audit completed with 15 hosts, 5 hosts with open ports,
+- A later Security Audit audit completed with 15 hosts, 5 hosts with open ports,
   6 identified products, and 24 potential offline matches.
 
 Background notices, active/paused labels, default-save selection, B cancellation,
