@@ -185,3 +185,32 @@ labels, exit-warning cancellation/default reset, radio-drain ordering, both exit
 choices, SD failures, real current-session deletion and preservation of prior
 sessions and unknown files. Verify the new flow on hardware, using a disposable
 recording to test discard and checking the main menu remains responsive.
+
+### Owner hardware verification — 12 November 2026
+
+The owner reports completing the navigation/save/discard checklist and the
+Net Scanner -> combined Wardrive transition successfully on ESP32-C5, using
+QA source `166471b`, the pinned release SDK and diagnostics enabled.
+
+The supplied console excerpt independently confirms:
+
+- A combined Wi-Fi/BLE session discarded successfully (`saved=0 discarded=1`),
+  with 11 Wi-Fi and 18 BLE devices and zero write errors.
+- A second combined session saved successfully (`saved=1 discarded=0`), with
+  7 Wi-Fi and 18 BLE devices and zero write errors.
+- Both radio workers finished with `error=0x0`, completed teardown, and control
+  subsequently reached other applications. No 0x5001 cleanup loop appears.
+- A later Net Scanner audit completed with 15 hosts, 5 hosts with open ports,
+  6 identified products, and 24 potential offline matches.
+
+Background notices, active/paused labels, default-save selection, B cancellation,
+and preservation of older saved sessions are owner-observed UI results rather
+than facts inferable from serial logging. The pasted excerpt ends at the later
+scanner audit; the successful subsequent scanner-to-Wardrive transition is
+owner-reported, not captured in that excerpt. This verification applies to the
+diagnostic QA build; it does not establish diagnostics-disabled acceptance,
+ESP32-C6 coverage or a new on-device handshake-engine test.
+
+The DNS cleanup fix and navigation changes remain on this QA branch. They have
+not yet been applied to the separate draft Wardrive PR #50 branch, and no Net
+Scanner PR was opened as part of this hardware-test update.
