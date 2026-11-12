@@ -36,6 +36,7 @@
 #endif
 #include "menu_cli_web.h"
 #include "menu_net_scanner.h"
+#include "menu_handshake_crack.h"
 #include "menu_control_music.h"
 #include "menu_deauth.h"
 #include "menu_deauth_detector.h"
@@ -70,6 +71,7 @@
 #include "menu_spectrum.h"
 #include "menu_device_inspector.h"
 #include "menu_wifi_guard.h"
+#include "menu_wardrive.h"
 #include "menu_sd_browser.h"
 #include "menu_sniffer_rt.h"
 #include "menu_sniffer_device.h"
@@ -85,6 +87,7 @@
 #include "esp_system.h"
 #include "esp_sleep.h"
 #include "esp_timer.h"
+#include "soc/soc_caps.h"
 #include "driver/gpio.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -539,6 +542,13 @@ static void action_wifi_detector_(void)
     menu_wifi_detector_show();
 }
 
+static void action_handshake_crack_(void)
+{
+    detach_menu_();
+    vTaskDelay(pdMS_TO_TICKS(180U));
+    menu_handshake_crack_show();
+}
+
 static void action_poomgotchi_(void)
 {
     detach_menu_();
@@ -761,9 +771,17 @@ static void power_off_enter_deep_sleep_(void)
         (void)sd_card_unmount();
     }
 
-    if ((gpio_config(&wake_cfg) != ESP_OK) ||
-        (esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL) != ESP_OK) ||
-        (esp_deep_sleep_enable_gpio_wakeup(wake_mask, ESP_GPIO_WAKEUP_GPIO_LOW) != ESP_OK))
+    bool wake_ok = (gpio_config(&wake_cfg) == ESP_OK) &&
+                   (esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL) == ESP_OK);
+    /* 1.0.15 used esp_deep_sleep_enable_gpio_wakeup(), which ESP-IDF v6.1.0
+     * (the version 1.0.15 targets) does not expose for the esp32c5. Use the
+     * GPIO-wakeup API that v6.1.0 does have. On this chip/IDF that may only
+     * wake from light sleep; from deep sleep the device wakes on reset. */
+    (void)wake_mask;
+    wake_ok = wake_ok &&
+              (gpio_wakeup_enable(wake_pin, GPIO_INTR_LOW_LEVEL) == ESP_OK) &&
+              (esp_sleep_enable_gpio_wakeup() == ESP_OK);
+    if (!wake_ok)
     {
         /* Re-enable the screen so a configuration failure is visible. */
         poom_arduboy_set_display_enabled(true);
@@ -1025,6 +1043,14 @@ static void action_device_inspector_(void)
     menu_device_inspector_show();
 }
 
+/** Hand the shared display and buttons to Wardrive, as for sibling apps. */
+static void action_wardrive_(void)
+{
+    detach_menu_();
+    vTaskDelay(pdMS_TO_TICKS(180U));
+    menu_wardrive_show();
+}
+
 /** Opens the passive Wi-Fi beacon consistency monitor. */
 static void action_wifi_guard_(void)
 {
@@ -1153,6 +1179,7 @@ static const poom_menu_item_t s_apps_beast[] = {
     {"TV OFF", action_tv_off_},
     {"BLE DETECT", action_ble_detector_},
     {"WIFI DETECT", action_wifi_detector_},
+    {"CRACK HS", action_handshake_crack_},
     {"POOMGOTCHI", action_poomgotchi_},
     {"SNIFFER", action_pcap_snf_},
     {"SNNIFER RT", action_sniffer_rt_},
@@ -1162,6 +1189,7 @@ static const poom_menu_item_t s_apps_beast[] = {
     {"WIFI GUARD", action_wifi_guard_},
     {"SCAN NET", action_arp_},
     {"NET SCANNER", action_net_scanner_},
+    {"WARDRIVE", action_wardrive_},
 
 #if CONFIG_ZB_ENABLED
     {"CLI ZIGBEE", action_cli_zigbee_},

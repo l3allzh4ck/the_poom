@@ -4,7 +4,6 @@ file(GLOB POOM_APP_PACK_SRCS
 
 list(REMOVE_ITEM POOM_APP_PACK_SRCS
     "${COMPONENT_DIR}/src/menu_sony_tv.c"
-    "${COMPONENT_DIR}/src/menu_wardrive.c"
     "${COMPONENT_DIR}/src/menu_netguard.c"
 )
 
@@ -30,6 +29,8 @@ endif()
 list(REMOVE_DUPLICATES POOM_APP_PACK_SRCS)
 
 set(POOM_APP_PACK_REQUIRES
+    poom_gps
+    poom_wardrive
     app_update
     nvs_flash
     button_driver
@@ -129,4 +130,16 @@ idf_component_register(
     PRIV_INCLUDE_DIRS ${POOM_APP_PACK_PRIV_INCLUDE_DIRS}
     REQUIRES ${POOM_APP_PACK_REQUIRES}
     PRIV_REQUIRES ${POOM_APP_PACK_PRIV_REQUIRES}
+)
+
+# The WPA handshake cracker is a tight SHA-1/PBKDF2 hot loop (~16k block
+# compressions per guess). Pin it to -O2 regardless of the project's global
+# optimization level (Debug/-Og or Size/-Os would leave speed on the table).
+# The last -O on the command line wins, so this overrides the component default.
+# (The crack subsystem also includes src/poom_hs_crack_journal.c, picked up by
+# the file(GLOB) above; editing this file forces a reconfigure so new sources
+# are rescanned without a manual fullclean.)
+set_source_files_properties(
+    "${COMPONENT_DIR}/src/poom_handshake_crack.c"
+    PROPERTIES COMPILE_OPTIONS "-O2"
 )
