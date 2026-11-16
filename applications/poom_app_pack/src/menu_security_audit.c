@@ -4320,7 +4320,18 @@ void menu_security_audit_show(void)
     /* Bring up the STA driver/netif (idempotent) before any connect, and
      * register for link events -- without this, association never completes and
      * sta_has_ip() never becomes true. Mirrors menu_wifi_profiles.c. */
+    wifi_mode_t previous_mode;
+    bool driver_was_uninitialised =
+        (esp_wifi_get_mode(&previous_mode) == ESP_ERR_WIFI_NOT_INIT);
     esp_err_t wst = poom_wifi_ctrl_init_sta();
+    if (wst != ESP_OK && driver_was_uninitialised)
+    {
+        /* Unwind only a driver created by this failed app startup. The shared
+         * manager can fail before recording that it initialized the driver. */
+        (void)poom_wifi_ctrl_deinit();
+        (void)esp_wifi_stop();
+        (void)esp_wifi_deinit();
+    }
     (void)poom_wifi_ctrl_register_cb(sa_wifi_evt_cb_, NULL);
     if (wst != ESP_OK)
     {

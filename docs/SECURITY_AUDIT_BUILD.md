@@ -14,17 +14,16 @@ Keep the upstream dependency versions.
 
 ## Memory profile
 
-`sdkconfig.security_audit_release` reproduces the Wardrive-verified memory
-settings from `feature/wardrive-pr-1.0.16` at `41509ed`:
-quad PSRAM at 80 MHz, malloc enabled, internal threshold 512 bytes,
-internal reserve 32768 bytes, Wi-Fi/LWIP allocations in PSRAM, external BSS,
-static RX 10, dynamic RX 32, static TX 16, cache TX 32 and RX BA window 6.
+Use upstream `sdkconfig.esp32c5.ram_optimization` with `sdkconfig.defaults`.
+No app-specific profile is added or needed. This enables PSRAM malloc,
+external BSS, the 512-byte internal threshold and 32 KiB internal reserve,
+Wi-Fi/LWIP external allocation and mbedTLS external allocation. It does not
+change TLS verification or Wi-Fi IRAM options.
 
-External BSS is required for memory equivalence with that verified profile.
-This is opt-in: stock defaults, partitions, TLS and Wi-Fi IRAM settings are
-unchanged. The broader `sdkconfig.esp32c5.ram_optimization` profile is not
-this acceptance configuration. Wardrive's hardware acceptance does not
-establish hardware acceptance of Security Audit.
+The pinned SDK generates Wi-Fi static RX 16 and RX BA window 16, rather than
+the earlier custom profile's 10/6; external mbedTLS allocation also differs.
+The new profile and standard four-file SD mount require fresh hardware tests.
+The app does not change the shared profile or the shared SD mount defaults.
 
 ## Fresh build
 
@@ -35,7 +34,7 @@ not reliably override an existing configuration.
 git submodule update --init --recursive
 idf.py -B build-security-audit-release -D IDF_TARGET=esp32c5 \
   -D SDKCONFIG=build-security-audit-release/sdkconfig \
-  '-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.security_audit_release' build size
+  '-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.esp32c5.ram_optimization' build size
 ```
 
 Verify the generated sdkconfig contains every setting in the profile,
@@ -48,21 +47,13 @@ idf.py -B build-security-audit-release -p YOUR_PORT flash
 idf.py -B build-security-audit-release -p YOUR_PORT monitor --no-reset
 ```
 
-## Host checks
+## Optional developer checks
 
-With GCC, Clang and sanitizer runtimes installed:
-
-```sh
-sh tools/security_audit_hostcheck/check.sh
-sh tools/security_audit_hostcheck/test_harness.sh
-```
-
-The harness runs six pure-logic suites under ASan/UBSan and compile checks
-with both GCC and Clang in C23 mode with warnings as errors. It uses isolated
-temporary files, propagates compiler and test failures, and may be run from
-any working directory. The separate harness regression injects compiler and
-test failures. Host stubs do not verify lwIP, drivers or radio transitions;
-the full firmware build is required for those source files.
+Host-only modules, FreeRTOS/SDK stubs and compiler/regression harnesses are
+maintained separately on `validation/security-audit-pr51` in the contributor
+fork. They are not part of the application PR or firmware build. The
+validation branch retains matching source and supplementary check instructions.
+The normal application build requires ESP-IDF, not a host GCC/Clang harness.
 
 ## Hardware acceptance still required
 

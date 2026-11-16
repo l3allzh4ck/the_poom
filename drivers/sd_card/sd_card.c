@@ -98,7 +98,7 @@ static const char *const s_fresult_names[] = {
 };
 
 static sdmmc_card_t *s_card = NULL;
-static esp_err_t s_last_raw_err = ESP_OK; /* unmapped IDF error of the last mount */
+static esp_err_t s_last_raw_err = ESP_OK;
 static sd_card_info_t s_sd_card_info = {0};
 
 /**
@@ -182,11 +182,11 @@ static esp_err_t sd_card_fill_info_(const sdmmc_card_t *card)
 /**
  * @brief Mount SD card filesystem through SDSPI.
  */
-static esp_err_t sd_card_mount_internal_(bool format_if_mount_failed, int max_files)
+static esp_err_t sd_card_mount_internal_(bool format_if_mount_failed)
 {
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = format_if_mount_failed,
-        .max_files = max_files,
+        .max_files = SD_CARD_MAX_OPEN_FILES,
         .allocation_unit_size = SD_CARD_ALLOC_UNIT_SIZE,
     };
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
@@ -253,17 +253,13 @@ static esp_err_t sd_card_unmount_internal_(void)
         return ESP_FAIL;
     }
 
-    /* The FAT volume and card handle are gone at this point; clear the handle
-     * BEFORE freeing the bus so a bus-free failure can't leave a dangling
-     * s_card that makes sd_card_is_mounted() lie. */
-    s_card = NULL;
-
     if (spi_bus_free(host.slot) != ESP_OK)
     {
         SD_CARD_PRINTF_E("spi_bus_free failed");
         return ESP_FAIL;
     }
 
+    s_card = NULL;
     SD_CARD_PRINTF_I("SD card unmounted");
     return ESP_OK;
 }
@@ -308,29 +304,12 @@ esp_err_t sd_card_mount(void)
         return ESP_OK;
     }
 
-    err = sd_card_mount_internal_(false, (int)SD_CARD_MAX_OPEN_FILES);
+    err = sd_card_mount_internal_(false);
     if (err != ESP_OK)
     {
         SD_CARD_PRINTF_E("mount failed (%s)", esp_err_to_name(err));
     }
     return err;
-}
-
-esp_err_t sd_card_last_raw_err(void)
-{
-    return s_last_raw_err;
-}
-
-esp_err_t sd_card_mount_lean(void)
-{
-    if (sd_card_is_mounted())
-    {
-        return ESP_OK;
-    }
-    /* Two open files (e.g. a CSV + its index): ESP-IDF allocates the FAT
-     * context with every FIL slot in ONE block, so the default 4 slots need a
-     * much larger contiguous block. For callers on a busy, fragmented heap. */
-    return sd_card_mount_internal_(false, 2);
 }
 
 esp_err_t sd_card_unmount(void)
@@ -350,7 +329,7 @@ esp_err_t sd_card_check_format(void)
         return ESP_OK;
     }
 
-    return sd_card_mount_internal_(true, (int)SD_CARD_MAX_OPEN_FILES);
+    return sd_card_mount_internal_(true);
 }
 
 esp_err_t sd_card_format(void)
@@ -359,7 +338,7 @@ esp_err_t sd_card_format(void)
 
     if (sd_card_is_not_mounted())
     {
-        err = sd_card_mount_internal_(true, (int)SD_CARD_MAX_OPEN_FILES);
+        err = sd_card_mount_internal_(true);
         if (err != ESP_OK)
         {
             SD_CARD_PRINTF_E("mount before format failed");
@@ -695,4 +674,10 @@ esp_err_t sd_card_read_file_to_buffer(const char *path, uint8_t **out_data, size
     SD_CARD_PRINTF_I("read %u bytes from %s", (unsigned)*out_size, full_path);
     free(full_path);
     return ESP_OK;
+}
+
+/* Expose the unmapped cause without changing the shared mount policy. */
+esp_err_t sd_card_last_raw_err(void)
+{
+    return s_last_raw_err;
 }

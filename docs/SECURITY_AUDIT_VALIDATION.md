@@ -60,3 +60,35 @@ Wardrive navigation improvements remain on the QA branch, outside this PR.
 The tested combined Wi-Fi/BLE transition used that fix. When combining with
 Wardrive PR #50, apply its focused DNS cleanup fix as well; Security Audit
 itself does not depend on the Wardrive feature.
+
+## Maintainer scope revision (hardware check pending)
+
+- Reuse upstream `sdkconfig.esp32c5.ram_optimization`; delete the duplicate
+  app-specific memory profile. Do not modify the shared profile.
+- Keep host test modules, FreeRTOS/SDK stubs and harness scripts separately on
+  `validation/security-audit-pr51`, outside this application PR.
+- Restore the shared Wi-Fi controller to upstream. A failed startup unwinds
+  an app-created driver locally; a previously initialized driver is not
+  deinitialized by that failure path.
+- Use standard `sd_card_mount()` settings (four slots), removing the lean-mount
+  API and the separate unmount bookkeeping change from this PR.
+- Retain only an additive, read-only raw mount-error accessor in the SD driver.
+  Upstream maps multiple card-init causes (including allocation failure) to
+  the same public error. The accessor lets the app distinguish a missing/bad
+  card from memory pressure that may recover after radio teardown. It does
+  not change mount defaults, filesystem behavior or other callers.
+
+These configuration and mount-policy changes invalidate earlier standalone/
+combined hardware acceptance for the revised configuration. Repeat SD present/
+absent, index generation, report saving, cancellation and Wi-Fi/BLE transitions
+on owned test devices before merge. No exploit execution or password attempts
+are part of these changes or their validation.
+
+Maintainer-review build check: full ESP32-C5 build on the pinned release SDK
+with the unmodified upstream RAM profile passed. Image 0x37b0a0 retains 4% app-slot headroom.
+Six optional host suites and GCC strict compile checks passed; the optional
+Clang compile pass was unavailable because Clang is not installed in the
+validation environment. The harness failure-propagation test passed. An
+additional production-startup-block test confirmed app-created failed drivers
+are unwound and pre-existing drivers are left untouched.
+Hardware acceptance of this revised profile remains pending.

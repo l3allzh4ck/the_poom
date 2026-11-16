@@ -35,14 +35,13 @@ static bool net_audit_ensure_sd_(void)
     {
         return true;
     }
-    /* Lean mount (2 open files, CSV + index): the default 4-slot mount needs a ~21 KB
-     * contiguous block, which a Wi-Fi-connected, post-scan heap often lacks.
-     * One retry for transient failures (the driver frees the bus on error). */
-    s_last_mount_err = sd_card_mount_lean();
+    /* Use the shared driver's standard mount settings. Release only a mount
+     * acquired by this app; leave an already-mounted card owned by its caller. */
+    s_last_mount_err = sd_card_mount();
     if (s_last_mount_err != ESP_OK)
     {
         vTaskDelay(pdMS_TO_TICKS(200));
-        s_last_mount_err = sd_card_mount_lean();
+        s_last_mount_err = sd_card_mount();
         if (s_last_mount_err != ESP_OK)
         {
             return false;
