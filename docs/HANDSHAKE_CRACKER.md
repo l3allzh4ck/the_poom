@@ -104,3 +104,14 @@ run in full on-device; extract a top-N from them instead.
   overriding the project's default optimization level for just that file — so
   cracking speed stays up regardless of the global build type. Set via
   `set_source_files_properties` in `applications/poom_app_pack/CMakeLists.txt`.
+
+## Power-off GPIO compatibility
+
+Power-off still enters deep sleep and wakes through the configured LEFT
+button pin. On ESP-IDF 6.1 final it uses
+`esp_sleep_enable_gpio_wakeup_on_hp_periph_powerdown()`, selected by the SDK
+capability macro. The older release snapshot uses the original deep-sleep
+API. The light-sleep-only wakeup pair is not used. Compile checks against
+both SDK header versions passed; physical sleep/wake testing is still needed.
+The branch is updated to the 1.0.16 base so Device Inspector and Wi-Fi Guard
+are retained. No cracking implementation changes are part of this correction.

@@ -68,6 +68,8 @@
 #include "menu_wifi_profiles.h"
 #include "menu_scanner_core.h"
 #include "menu_spectrum.h"
+#include "menu_device_inspector.h"
+#include "menu_wifi_guard.h"
 #include "menu_sd_browser.h"
 #include "menu_sniffer_rt.h"
 #include "menu_sniffer_device.h"
@@ -757,14 +759,19 @@ static void power_off_enter_deep_sleep_(void)
 
     bool wake_ok = (gpio_config(&wake_cfg) == ESP_OK) &&
                    (esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL) == ESP_OK);
-    /* 1.0.15 used esp_deep_sleep_enable_gpio_wakeup(), which ESP-IDF v6.1.0
-     * (the version 1.0.15 targets) does not expose for the esp32c5. Use the
-     * GPIO-wakeup API that v6.1.0 does have. On this chip/IDF that may only
-     * wake from light sleep; from deep sleep the device wakes on reset. */
-    (void)wake_mask;
+    /* ESP-IDF 6.1 renamed the deep-sleep-capable GPIO wakeup API.
+     * The older release snapshot exposes the original name. Never substitute
+     * the light-sleep-only gpio_wakeup_enable/esp_sleep_enable_gpio_wakeup pair. */
+#if defined(SOC_GPIO_SUPPORT_HP_PERIPH_PD_SLEEP_WAKEUP) && SOC_GPIO_SUPPORT_HP_PERIPH_PD_SLEEP_WAKEUP
     wake_ok = wake_ok &&
-              (gpio_wakeup_enable(wake_pin, GPIO_INTR_LOW_LEVEL) == ESP_OK) &&
-              (esp_sleep_enable_gpio_wakeup() == ESP_OK);
+              (esp_sleep_enable_gpio_wakeup_on_hp_periph_powerdown(
+                  wake_mask, ESP_GPIO_WAKEUP_GPIO_LOW) == ESP_OK);
+#elif defined(SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP) && SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP
+    wake_ok = wake_ok &&
+              (esp_deep_sleep_enable_gpio_wakeup(wake_mask, ESP_GPIO_WAKEUP_GPIO_LOW) == ESP_OK);
+#else
+    wake_ok = false;
+#endif
     if (!wake_ok)
     {
         /* Re-enable the screen so a configuration failure is visible. */
@@ -1019,6 +1026,22 @@ static void action_spectrum_(void)
     menu_spectrum_show();
 }
 
+/** Opens the passive multi-radio IoT observation summary. */
+static void action_device_inspector_(void)
+{
+    detach_menu_();
+    vTaskDelay(pdMS_TO_TICKS(180U));
+    menu_device_inspector_show();
+}
+
+/** Opens the passive Wi-Fi beacon consistency monitor. */
+static void action_wifi_guard_(void)
+{
+    detach_menu_();
+    vTaskDelay(pdMS_TO_TICKS(180U));
+    menu_wifi_guard_show();
+}
+
 /**
  * @brief Internal helper for `action_imu_monitor`.
  *
@@ -1145,6 +1168,8 @@ static const poom_menu_item_t s_apps_beast[] = {
     {"SNNIFER RT", action_sniffer_rt_},
     {"SCAN CHANNELS", action_scanner_core_},
     {"SPECTRUM", action_spectrum_},
+    {"DEVICE INSPECTOR", action_device_inspector_},
+    {"WIFI GUARD", action_wifi_guard_},
     {"SCAN NET", action_arp_},
 
 #if CONFIG_ZB_ENABLED
