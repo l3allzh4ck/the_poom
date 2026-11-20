@@ -27,6 +27,7 @@
 #include "menu_ble_scan.h"
 #include "menu_ble_spam.h"
 #include "menu_captive.h"
+#include "menu_hs_vault.h"
 #include "menu_cli_nfc.h"
 #if CONFIG_ZB_ENABLED
 #include "menu_cli_zigbee.h"
@@ -440,6 +441,18 @@ static void action_poomgotchi_(void)
     detach_menu_();
     vTaskDelay(pdMS_TO_TICKS(180U));
     menu_poomgotchi_show();
+}
+
+/**
+ * @brief Internal helper for `action_hs_vault`.
+ *
+ * @return void
+ */
+static void action_hs_vault_(void)
+{
+    detach_menu_();
+    vTaskDelay(pdMS_TO_TICKS(180U));
+    app_hs_vault();
 }
 
 /**
@@ -955,6 +968,7 @@ static const poom_menu_item_t s_apps_beast[] = {
     {"BLE DETECT", action_ble_detector_},
     {"WIFI DETECT", action_wifi_detector_},
     {"POOMGOTCHI", action_poomgotchi_},
+    {"HS VAULT", action_hs_vault_},
     {"SNIFFER", action_pcap_snf_},
     {"SNNIFER RT", action_sniffer_rt_},
     {"SCAN CHANNELS", action_scanner_core_},
