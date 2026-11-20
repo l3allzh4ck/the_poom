@@ -30,17 +30,36 @@ static httpd_handle_t server;
 static atomic_bool stopping;
 static char secret[33];
 static char cookie_secret[33];
-static uint64_t expires, locked_until;
+static uint64_t expires;
 static unsigned failures;
+/* established: a client has authenticated, so the initial-connection timeout no
+ * longer applies and the server stays up until it is stopped on the POOM.
+ * locked: too many wrong codes were entered; stays locked until the server is
+ * restarted (there is no timed auto-unlock). */
+static bool established;
+static bool locked;
 
 static uint64_t now(void)
 {
     return (uint64_t)esp_timer_get_time() / 1000;
 }
 
+/* The 10-minute window guards only the INITIAL connection: once a client has
+ * authenticated it never expires on its own (esp_timer is monotonic uptime, and
+ * the server is RAM-only so a reboot ends it outright regardless). */
+static bool access_expired(void)
+{
+    return !established && now() >= expires;
+}
+
 bool poom_hs_transfer_expired(void)
 {
-    return server && now() >= expires;
+    return server && access_expired();
+}
+
+bool poom_hs_transfer_locked(void)
+{
+    return server && locked;
 }
 
 /* Constant-time compare so a wrong code leaks no timing information. */
@@ -88,7 +107,7 @@ static bool safe_name(const char *s)
 
 static bool authed(httpd_req_t *r)
 {
-    if (now() >= expires)
+    if (access_expired())
     {
         return false;
     }
@@ -123,13 +142,14 @@ static esp_err_t deny(httpd_req_t *r)
 {
     return httpd_resp_send_err(r, HTTPD_401_UNAUTHORIZED,
                                "Open / and enter the current 10-digit POOM code. "
-                               "Repeated failures lock login for one minute.");
+                               "After too many wrong codes the export locks; "
+                               "restart it on the POOM to try again.");
 }
 
 static esp_err_t login(httpd_req_t *r)
 {
     const size_t length = 6 + HS_TRANSFER_CODE_DIGITS; /* "token=" + digits */
-    if (now() >= expires || now() < locked_until || r->content_len != (int)length)
+    if (locked || access_expired() || r->content_len != (int)length)
     {
         return deny(r);
     }
@@ -148,14 +168,18 @@ static esp_err_t login(httpd_req_t *r)
     {
         if (++failures >= 5)
         {
-            locked_until = now() + 60000;
-            failures = 0;
+            locked = true; /* permanent until the export is restarted on the POOM */
         }
         return deny(r);
     }
+    /* First successful login establishes the session: the initial-connection
+     * timeout no longer applies. Max-Age is long so the cookie does not lapse
+     * mid-transfer; the server, not the cookie, bounds validity (it dies on
+     * stop/reboot and re-mints a new secret each start). */
+    established = true;
     char cookie[96];
     snprintf(cookie, sizeof(cookie),
-             "hs=%s; HttpOnly; SameSite=Strict; Path=/; Max-Age=600", cookie_secret);
+             "hs=%s; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400", cookie_secret);
     httpd_resp_set_hdr(r, "Set-Cookie", cookie);
     httpd_resp_set_status(r, "303 See Other");
     httpd_resp_set_hdr(r, "Location", "/");
@@ -172,27 +196,22 @@ static esp_err_t list_by_ext(httpd_req_t *r, const char *ext, unsigned *shown)
     }
     struct dirent *e;
     esp_err_t result = ESP_OK;
+    size_t el = strlen(ext);
     while ((e = readdir(d)))
     {
         size_t n = strlen(e->d_name);
-        size_t el = strlen(ext);
         if (n <= el || strcmp(e->d_name + n - el, ext) || !safe_name(e->d_name))
         {
             continue;
         }
-        char path[256];
-        struct stat st;
-        /* safe_name() already bounds the name to <=64 bytes; the %.64s
-         * precision makes that explicit for -Wformat-truncation. */
-        snprintf(path, sizeof(path), "%s/%.64s", HS_DIR, e->d_name);
-        if (stat(path, &st) || !S_ISREG(st.st_mode))
-        {
-            continue;
-        }
-        char chunk[256];
+        /* No stat() per file: with 100+ captures (x2 for .pcap) a stat() each
+         * made the page feel hung. The extension + safe_name filter is enough to
+         * build a valid, traversal-safe download link; the %.64s precision keeps
+         * -Wformat-truncation satisfied (safe_name bounds the name to <=64). */
+        char chunk[192];
         snprintf(chunk, sizeof(chunk),
-                 "<p><a href=\"/download?file=%.64s\">%.64s</a> (%lu bytes)</p>",
-                 e->d_name, e->d_name, (unsigned long)st.st_size);
+                 "<p><a href=\"/download?file=%.64s\">%.64s</a></p>",
+                 e->d_name, e->d_name);
         if ((result = httpd_resp_sendstr_chunk(r, chunk)) != ESP_OK)
         {
             break;
@@ -228,7 +247,8 @@ static esp_err_t index_page(httpd_req_t *r)
         r,
         "<!doctype html><title>POOM Handshakes</title><h1>Captured handshakes</h1>"
         "<p>Hashcat <code>.22000</code> files first, then the raw <code>.pcap</code> "
-        "captures. HTTP is unencrypted. Access expires ten minutes after start.</p>"
+        "captures. HTTP is unencrypted. The export stays open until it is stopped "
+        "on the POOM.</p>"
         "<h2>Hashcat (.22000)</h2>");
     if (result != ESP_OK)
     {
@@ -278,7 +298,7 @@ static esp_err_t stream_file(httpd_req_t *r, const char *path, const char *filen
     esp_err_t result = ESP_OK;
     while ((n = fread(b, 1, sizeof(b), f)))
     {
-        if (now() >= expires || (result = httpd_resp_send_chunk(r, b, n)) != ESP_OK)
+        if (access_expired() || (result = httpd_resp_send_chunk(r, b, n)) != ESP_OK)
         {
             result = ESP_FAIL;
             break;
@@ -347,9 +367,10 @@ bool poom_hs_transfer_start(char token[33])
     {
         snprintf(cookie_secret + i * 2, 3, "%02x", random[i]);
     }
-    expires = now() + 600000;
-    locked_until = 0;
+    expires = now() + 600000; /* initial-connection window only */
     failures = 0;
+    established = false;
+    locked = false;
     atomic_store(&stopping, false);
 
     httpd_config_t c = HTTPD_DEFAULT_CONFIG();

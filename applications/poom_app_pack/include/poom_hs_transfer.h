@@ -36,8 +36,14 @@ bool poom_hs_transfer_start(char token[33]);
 /* Stop the server and wipe the secrets. Safe to call when not running. */
 void poom_hs_transfer_stop(void);
 
-/* True once the running server has passed its 10-minute expiry. */
+/* True once the running server's initial-connection window has lapsed with no
+ * client having authenticated. After a client authenticates this stays false
+ * (the export then runs until it is stopped). */
 bool poom_hs_transfer_expired(void);
+
+/* True once too many wrong access codes were entered. The export then rejects
+ * all logins until it is stopped and restarted (no timed auto-unlock). */
+bool poom_hs_transfer_locked(void);
 
 #ifdef __cplusplus
 }

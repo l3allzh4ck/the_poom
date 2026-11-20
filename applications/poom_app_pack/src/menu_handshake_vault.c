@@ -78,6 +78,7 @@ static volatile bool s_have_ip = false;
 static char s_ip[20] = {0};
 static char s_token[33] = {0};
 static bool s_serving = false;
+static unsigned s_hs_count = 0U; /* cached at serve start; avoids re-scanning the SD each redraw */
 
 static volatile bool s_launch_crack = false;
 
@@ -263,6 +264,22 @@ static void hv2_draw_connecting_(void)
 static void hv2_draw_serving_(void)
 {
     char l[40];
+
+    /* Too many wrong codes were entered on the browser: tell the operator to
+     * restart the export (the server stays locked until they do). */
+    if (poom_hs_transfer_locked())
+    {
+        hv2_draw_header_("EXPORT LOCKED");
+        poom_arduboy_set_cursor(2, 20);
+        (void)poom_arduboy_print(F("Wrong code entered"));
+        poom_arduboy_set_cursor(2, 30);
+        (void)poom_arduboy_print(F("too many times."));
+        poom_arduboy_set_cursor(2, 42);
+        (void)poom_arduboy_print(F("B: restart export"));
+        poom_arduboy_display();
+        return;
+    }
+
     hv2_draw_header_("EXPORT READY");
     poom_arduboy_set_cursor(2, 16);
     (void)snprintf(l, sizeof(l), "http://%s/", s_ip);
@@ -271,7 +288,7 @@ static void hv2_draw_serving_(void)
     (void)snprintf(l, sizeof(l), "Code: %.10s", s_token);
     (void)poom_arduboy_print(l);
     poom_arduboy_set_cursor(2, 40);
-    (void)snprintf(l, sizeof(l), "%u handshakes", hv2_count_22000_());
+    (void)snprintf(l, sizeof(l), "%u handshakes", s_hs_count);
     (void)poom_arduboy_print(l);
     poom_arduboy_set_cursor(2, 56);
     (void)poom_arduboy_print(F("B:STOP"));
@@ -508,6 +525,7 @@ static void hv2_task_(void *arg)
             {
                 if (poom_hs_transfer_start(s_token))
                 {
+                    s_hs_count = hv2_count_22000_(); /* count once, not every redraw */
                     s_serving = true;
                     s_screen = HV2_SERVING;
                 }
