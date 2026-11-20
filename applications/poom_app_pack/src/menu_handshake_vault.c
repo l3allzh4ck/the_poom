@@ -27,9 +27,11 @@
 #include "freertos/task.h"
 #include "input_events.h"
 #include "menu_handshake_crack.h"
+#include "esp_wifi.h"
 #include "poom_hs_link.h"
 #include "poom_hs_transfer.h"
 #include "poom_sbus.h"
+#include "poom_ui_keyboard.h"
 #include "poom_wifi_ctrl.h"
 #include "poom_wifi_profile_store.h"
 #include "sd_card.h"
@@ -45,11 +47,17 @@
 #define HV2_CONNECT_TIMEOUT_MS (20000U)
 #define HV2_INFO_MS            (2600U)
 #define HV2_VISIBLE_ROWS       (4U)
+#define HV2_SCAN_MAX           (16U)   /* networks shown by Scan for Network */
 
 typedef enum
 {
     HV2_MENU = 0,
-    HV2_PICK,
+    HV2_EXPORT_MENU,  /* Saved Profiles vs Scan for Network */
+    HV2_PICK,         /* saved-profile picker */
+    HV2_SCANNING,     /* live Wi-Fi scan in progress */
+    HV2_SCAN_LIST,    /* scan results picker */
+    HV2_PASSWORD,     /* on-device keyboard for the network password */
+    HV2_SAVE,         /* offer to save the scanned network */
     HV2_CONNECTING,
     HV2_SERVING,
     HV2_INFO,
@@ -81,6 +89,18 @@ static bool s_serving = false;
 static unsigned s_hs_count = 0U; /* cached at serve start; avoids re-scanning the SD each redraw */
 
 static volatile bool s_launch_crack = false;
+
+/* Export connect-source chooser + Scan for Network state. */
+static uint8_t s_export_sel = 0U; /* 0 = Saved Profiles, 1 = Scan for Network */
+static volatile bool s_scan_pending = false;
+static char s_scan_ssid[HV2_SCAN_MAX][POOM_WIFI_PROFILE_SSID_CAP];
+static bool s_scan_secure[HV2_SCAN_MAX];
+static uint16_t s_scan_count = 0U;
+static uint16_t s_scan_sel = 0U;
+static uint16_t s_scan_window = 0U;
+static poom_ui_keyboard_t s_kb;
+static char s_pending_ssid[POOM_WIFI_PROFILE_SSID_CAP];
+static char s_pending_pass[POOM_WIFI_PROFILE_PASS_CAP];
 
 static char s_info[40] = {0};
 static uint32_t s_info_until_ms = 0U;
@@ -174,18 +194,130 @@ static void hv2_request_connect_(const char *ssid, const char *pass)
     s_screen = HV2_CONNECTING;
 }
 
-/* EXPORT selected: load profiles and move to the picker (or warn). */
+/* EXPORT selected: offer Saved Profiles or Scan for Network (like Wardrive's
+ * transfer-over-Wi-Fi join). */
 static void hv2_begin_export_(void)
 {
     poom_wifi_profile_store_load(s_profiles, POOM_WIFI_PROFILE_MAX, &s_profile_count);
+    s_export_sel = 0U;
+    s_screen = HV2_EXPORT_MENU;
+}
+
+/* Saved Profiles chosen: open the picker, or warn if there are none. */
+static void hv2_start_saved_(void)
+{
     if (s_profile_count == 0U)
     {
-        hv2_info_("No WiFi profile saved");
+        hv2_info_("No saved profiles");
         return;
     }
     s_profile_sel = 0U;
     s_profile_window = 0U;
     s_screen = HV2_PICK;
+}
+
+/* Bring the private station up (clean, from the stock driver released) and run
+ * one blocking scan. Fills s_scan_* with up to HV2_SCAN_MAX unique SSIDs. Runs
+ * on the task (shows "Scanning..." first). */
+static void hv2_scan_run_(void)
+{
+    if (!poom_hs_link_owned())
+    {
+        (void)poom_wifi_ctrl_set_promiscuous(false);
+        (void)poom_wifi_ctrl_sta_disconnect();
+        (void)poom_wifi_ctrl_deinit();
+    }
+    if (!s_link_registered)
+    {
+        (void)poom_hs_link_register_cb(hv2_wifi_evt_cb_, NULL);
+        s_link_registered = true;
+    }
+    if (poom_hs_link_init_sta() != ESP_OK)
+    {
+        hv2_teardown_link_();
+        hv2_info_("Scan init failed");
+        return;
+    }
+
+    wifi_scan_config_t cfg = {0};
+    cfg.show_hidden = false;
+    if (esp_wifi_scan_start(&cfg, true) != ESP_OK)
+    {
+        hv2_info_("Scan failed");
+        return;
+    }
+    uint16_t found = HV2_SCAN_MAX;
+    wifi_ap_record_t recs[HV2_SCAN_MAX];
+    if (esp_wifi_scan_get_ap_records(&found, recs) != ESP_OK)
+    {
+        (void)esp_wifi_clear_ap_list();
+        hv2_info_("Scan read failed");
+        return;
+    }
+
+    s_scan_count = 0U;
+    for (uint16_t i = 0U; (i < found) && (s_scan_count < HV2_SCAN_MAX); i++)
+    {
+        const char *ssid = (const char *)recs[i].ssid;
+        if (ssid[0] == '\0')
+        {
+            continue; /* hidden */
+        }
+        bool dup = false;
+        for (uint16_t j = 0U; j < s_scan_count; j++)
+        {
+            if (strcmp(s_scan_ssid[j], ssid) == 0)
+            {
+                dup = true;
+                break;
+            }
+        }
+        if (dup)
+        {
+            continue;
+        }
+        (void)snprintf(s_scan_ssid[s_scan_count], POOM_WIFI_PROFILE_SSID_CAP, "%s", ssid);
+        s_scan_secure[s_scan_count] = (recs[i].authmode != WIFI_AUTH_OPEN);
+        s_scan_count++;
+    }
+
+    if (s_scan_count == 0U)
+    {
+        hv2_info_("No networks found");
+        return;
+    }
+    s_scan_sel = 0U;
+    s_scan_window = 0U;
+    s_screen = HV2_SCAN_LIST;
+}
+
+/* A scanned network was chosen: ask for a password (secured) or go straight to
+ * the save prompt (open). */
+static void hv2_pick_scanned_(void)
+{
+    (void)snprintf(s_pending_ssid, sizeof(s_pending_ssid), "%s", s_scan_ssid[s_scan_sel]);
+    s_pending_pass[0] = '\0';
+    if (s_scan_secure[s_scan_sel])
+    {
+        poom_ui_keyboard_init(&s_kb, s_pending_pass, sizeof(s_pending_pass), "WIFI PASSWORD");
+        s_screen = HV2_PASSWORD;
+    }
+    else
+    {
+        s_screen = HV2_SAVE;
+    }
+}
+
+/* Leaving the save prompt: optionally persist the network, then connect. */
+static void hv2_finish_scanned_(bool save)
+{
+    if (save)
+    {
+        (void)poom_wifi_profile_store_add_or_update(
+            s_profiles, &s_profile_count, POOM_WIFI_PROFILE_MAX,
+            s_pending_ssid, (s_pending_pass[0] != '\0') ? s_pending_pass : NULL);
+    }
+    hv2_request_connect_(s_pending_ssid, s_pending_pass);
 }
 
 /* ---- render -------------------------------------------------------------- */
@@ -305,6 +437,75 @@ static void hv2_draw_info_(void)
     poom_arduboy_display();
 }
 
+static void hv2_draw_export_menu_(void)
+{
+    static const char *const items[2] = {"SAVED PROFILES", "SCAN FOR NETWORK"};
+    hv2_draw_header_("EXPORT: CONNECT");
+    for (uint8_t i = 0U; i < 2U; i++)
+    {
+        int16_t y = (int16_t)(18 + (i * 12U));
+        poom_arduboy_set_cursor(6, y);
+        (void)poom_arduboy_print(items[i]);
+        if (i == s_export_sel)
+        {
+            poom_arduboy_fill_rect(0, (int16_t)(y - 2), ARDUBOY_WIDTH, 11, INVERT);
+        }
+    }
+    poom_arduboy_set_cursor(2, 54);
+    (void)poom_arduboy_print(F("A:SELECT  B:BACK"));
+    poom_arduboy_display();
+}
+
+static void hv2_draw_scanning_(void)
+{
+    hv2_draw_header_("SCAN");
+    poom_arduboy_set_cursor(2, 26);
+    (void)poom_arduboy_print(F("Scanning WiFi..."));
+    poom_arduboy_display();
+}
+
+static void hv2_draw_scan_list_(void)
+{
+    char l[40];
+    hv2_draw_header_("PICK NETWORK");
+    for (uint32_t i = 0U; i < HV2_VISIBLE_ROWS; i++)
+    {
+        uint32_t idx = s_scan_window + i;
+        if (idx >= s_scan_count)
+        {
+            break;
+        }
+        int16_t y = (int16_t)(14 + (i * 10U));
+        poom_arduboy_set_cursor(3, y);
+        (void)snprintf(l, sizeof(l), "%s%.18s",
+                       s_scan_secure[idx] ? "*" : " ", s_scan_ssid[idx]);
+        (void)poom_arduboy_print(l);
+        if (idx == s_scan_sel)
+        {
+            poom_arduboy_fill_rect(0, (int16_t)(y - 1), ARDUBOY_WIDTH, 9, INVERT);
+        }
+    }
+    poom_arduboy_set_cursor(2, 56);
+    (void)snprintf(l, sizeof(l), "%u/%u A:JOIN B:BACK",
+                   (unsigned)(s_scan_sel + 1U), (unsigned)s_scan_count);
+    (void)poom_arduboy_print(l);
+    poom_arduboy_display();
+}
+
+static void hv2_draw_save_(void)
+{
+    char l[40];
+    hv2_draw_header_("SAVE NETWORK?");
+    poom_arduboy_set_cursor(2, 22);
+    (void)snprintf(l, sizeof(l), "%.20s", s_pending_ssid);
+    (void)poom_arduboy_print(l);
+    poom_arduboy_set_cursor(2, 36);
+    (void)poom_arduboy_print(F("Save to profiles?"));
+    poom_arduboy_set_cursor(2, 56);
+    (void)poom_arduboy_print(F("A:YES  B:NO"));
+    poom_arduboy_display();
+}
+
 static void hv2_draw_(void)
 {
     if (!s_active)
@@ -313,12 +514,17 @@ static void hv2_draw_(void)
     }
     switch (s_screen)
     {
-    case HV2_MENU:       hv2_draw_menu_();       break;
-    case HV2_PICK:       hv2_draw_pick_();       break;
-    case HV2_CONNECTING: hv2_draw_connecting_(); break;
-    case HV2_SERVING:    hv2_draw_serving_();    break;
+    case HV2_MENU:        hv2_draw_menu_();        break;
+    case HV2_EXPORT_MENU: hv2_draw_export_menu_(); break;
+    case HV2_PICK:        hv2_draw_pick_();        break;
+    case HV2_SCANNING:    hv2_draw_scanning_();    break;
+    case HV2_SCAN_LIST:   hv2_draw_scan_list_();   break;
+    case HV2_PASSWORD:    poom_ui_keyboard_draw(&s_kb); break;
+    case HV2_SAVE:        hv2_draw_save_();        break;
+    case HV2_CONNECTING:  hv2_draw_connecting_();  break;
+    case HV2_SERVING:     hv2_draw_serving_();     break;
     case HV2_INFO:
-    default:             hv2_draw_info_();       break;
+    default:              hv2_draw_info_();        break;
     }
 }
 
@@ -393,6 +599,86 @@ static void hv2_button_cb_(const poom_sbus_msg_t *msg, void *user_ctx)
             {
                 hv2_begin_export_();
             }
+        }
+        break;
+
+    case HV2_EXPORT_MENU:
+        if (ev.button == BUTTON_B)
+        {
+            s_screen = HV2_MENU;
+        }
+        else if (ev.button == BUTTON_UP || ev.button == BUTTON_DOWN)
+        {
+            s_export_sel = (uint8_t)(s_export_sel ^ 1U);
+        }
+        else if (ev.button == BUTTON_A)
+        {
+            if (s_export_sel == 0U)
+            {
+                hv2_start_saved_();
+            }
+            else
+            {
+                s_scan_pending = true; /* scan runs on the task */
+                s_screen = HV2_SCANNING;
+            }
+        }
+        break;
+
+    case HV2_SCAN_LIST:
+        if (ev.button == BUTTON_B)
+        {
+            hv2_teardown_link_();
+            s_screen = HV2_EXPORT_MENU;
+        }
+        else if (ev.button == BUTTON_UP)
+        {
+            if (s_scan_sel > 0U)
+            {
+                s_scan_sel--;
+                if (s_scan_sel < s_scan_window)
+                {
+                    s_scan_window = s_scan_sel;
+                }
+            }
+        }
+        else if (ev.button == BUTTON_DOWN)
+        {
+            if (s_scan_sel + 1U < s_scan_count)
+            {
+                s_scan_sel++;
+                if (s_scan_sel >= s_scan_window + HV2_VISIBLE_ROWS)
+                {
+                    s_scan_window = (uint16_t)(s_scan_sel - (HV2_VISIBLE_ROWS - 1U));
+                }
+            }
+        }
+        else if (ev.button == BUTTON_A)
+        {
+            hv2_pick_scanned_();
+        }
+        break;
+
+    case HV2_PASSWORD:
+        if (ev.button == BUTTON_B)
+        {
+            s_screen = HV2_SCAN_LIST; /* back to pick a different network */
+        }
+        else if (poom_ui_keyboard_handle_button(&s_kb, ev.button) ==
+                 POOM_UI_KEYBOARD_ACTION_ACCEPT)
+        {
+            s_screen = HV2_SAVE;
+        }
+        break;
+
+    case HV2_SAVE:
+        if (ev.button == BUTTON_A)
+        {
+            hv2_finish_scanned_(true); /* save + connect */
+        }
+        else if (ev.button == BUTTON_B)
+        {
+            hv2_finish_scanned_(false); /* connect without saving */
         }
         break;
 
@@ -488,6 +774,13 @@ static void hv2_task_(void *arg)
             return;
         }
 
+        if (s_scan_pending)
+        {
+            s_scan_pending = false;
+            hv2_draw_();       /* show "Scanning..." before the blocking scan */
+            hv2_scan_run_();   /* blocking; advances to HV2_SCAN_LIST or an info */
+        }
+
         if (s_connect_pending)
         {
             s_connect_pending = false;
@@ -580,6 +873,9 @@ void menu_handshake_vault_show(void)
     s_ip[0] = '\0';
     s_token[0] = '\0';
     s_info[0] = '\0';
+    s_export_sel = 0U;
+    s_scan_pending = false;
+    s_scan_count = 0U;
 
     if (!s_buttons_subscribed)
     {
