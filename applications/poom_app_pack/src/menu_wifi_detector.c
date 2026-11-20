@@ -209,6 +209,11 @@ static char s_alias_buffer[MENU_WIFI_DETECTOR_ALIAS_LEN];
 static bool s_crack_launch;
 static char s_crack_path[160];
 static bool s_hs_crack_requested;
+/* Target snapshot kept across the crack hand-off so the cracker's exit callback
+ * can re-open this AP/client's Options screen instead of dropping to the menu. */
+static uint8_t s_crack_return_bssid[6];
+static uint8_t s_crack_return_client[6];
+static uint8_t s_crack_return_channel;
 
 static void menu_wifi_detector_button_cb_(const poom_sbus_msg_t *msg, void *user_ctx);
 static void menu_wifi_detector_free_(void);
@@ -1690,6 +1695,28 @@ static void menu_wifi_detector_select_ap_(void)
     s_input_dirty = true;
 }
 
+/* Invoked by the handshake cracker when it exits (registered before hand-off).
+ * Re-opens the same AP/client's Options screen so B from the cracker lands back
+ * in the capture flow rather than all the way out at THE BEAST menu. */
+static void menu_wifi_detector_crack_return_cb_(void *ctx)
+{
+    (void)ctx;
+    if(s_crack_return_channel != 0U)
+    {
+        menu_wifi_detector_show_client_options(s_crack_return_bssid,
+                                               s_crack_return_channel,
+                                               s_crack_return_client);
+        if(s_active)
+        {
+            return; /* detector re-opened on the same client */
+        }
+    }
+    /* Couldn't re-open (bad target, or no memory): resume the main menu so the
+     * UI never ends up with no active screen. */
+    const uint8_t token = 1U;
+    (void)poom_sbus_publish(POOM_MENU_RESUME_TOPIC, &token, sizeof(token), 0);
+}
+
 static void menu_wifi_detector_cleanup_(void)
 {
     const uint8_t token = 1U;
@@ -1722,9 +1749,16 @@ static void menu_wifi_detector_cleanup_(void)
     if(s_crack_launch)
     {
         /* The sniffer was stopped above (finalizing the .22000) and the radio
-         * released; the cracker takes over and publishes the resume token when
-         * it exits. */
+         * released; the cracker takes over and, on exit, invokes our return
+         * callback to re-open this client's Options screen. */
         s_crack_launch = false;
+        /* Snapshot the target (boot_ will clear the live copies) and arm the
+         * cracker's return callback so leaving it re-opens this client's
+         * Options screen instead of returning to THE BEAST. */
+        (void)memcpy(s_crack_return_bssid, s_selected_ap_bssid, sizeof(s_crack_return_bssid));
+        (void)memcpy(s_crack_return_client, s_hs_client, sizeof(s_crack_return_client));
+        s_crack_return_channel = s_monitor_channel;
+        menu_handshake_crack_set_exit_callback(menu_wifi_detector_crack_return_cb_, NULL);
         menu_handshake_crack_show_file(s_crack_path);
     }
     else if(s_hunt_launch)

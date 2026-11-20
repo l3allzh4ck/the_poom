@@ -277,6 +277,13 @@ void menu_detector_view_draw_handshake(const menu_detector_view_handshake_t *hs)
     (void)poom_arduboy_print(status);
     poom_arduboy_fill_rect(0, 33, ARDUBOY_WIDTH, 11, INVERT);
 
+    /* Controls legend: the deauth chord (left) and that RIGHT opens the options
+     * menu (right). Both are otherwise-hidden controls on this screen. */
+    poom_arduboy_set_cursor(0, 45);
+    (void)poom_arduboy_print("A+UP/DN:deauth");
+    poom_arduboy_set_cursor((int16_t)(ARDUBOY_WIDTH - (int)strlen("R:more") * 6 - 2), 45);
+    (void)poom_arduboy_print("R:more");
+
     /* Deauth state (bottom-left) + focus-client RX signal (bottom-right). */
     (void)snprintf(buf, sizeof(buf), "Deauth:%s",
                    (hs->deauth_state != NULL) ? hs->deauth_state : "Off");
