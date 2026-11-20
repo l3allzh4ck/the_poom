@@ -123,6 +123,19 @@ static void hv2_wake_(void)
     }
 }
 
+/* Handshakes live on the SD card; make sure it is mounted before we read or
+ * serve them. A fresh boot leaves the card unmounted until something uses it,
+ * which is why the folder read empty until a capture "nudged" it. Mirrors the
+ * cracker's hs_scan_dir_ mount. */
+static void hv2_ensure_sd_(void)
+{
+    if (sd_card_is_not_mounted())
+    {
+        sd_card_begin();
+        (void)sd_card_mount();
+    }
+}
+
 /* Count the .22000 files available to export (shown on the serving screen). */
 static unsigned hv2_count_22000_(void)
 {
@@ -243,6 +256,7 @@ static void hv2_scan_run_(void)
     cfg.show_hidden = false;
     if (esp_wifi_scan_start(&cfg, true) != ESP_OK)
     {
+        hv2_teardown_link_();
         hv2_info_("Scan failed");
         return;
     }
@@ -251,6 +265,7 @@ static void hv2_scan_run_(void)
     if (esp_wifi_scan_get_ap_records(&found, recs) != ESP_OK)
     {
         (void)esp_wifi_clear_ap_list();
+        hv2_teardown_link_();
         hv2_info_("Scan read failed");
         return;
     }
@@ -283,6 +298,7 @@ static void hv2_scan_run_(void)
 
     if (s_scan_count == 0U)
     {
+        hv2_teardown_link_();
         hv2_info_("No networks found");
         return;
     }
@@ -746,6 +762,8 @@ static void hv2_button_cb_(const poom_sbus_msg_t *msg, void *user_ctx)
 static void hv2_task_(void *arg)
 {
     (void)arg;
+
+    hv2_ensure_sd_(); /* handshakes are on the SD; mount it before any read/serve */
 
     while (s_active)
     {

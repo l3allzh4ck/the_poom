@@ -341,6 +341,20 @@ failed:
 esp_err_t poom_hs_link_init_sta(void)
 {
     wifi_init_config_t config = WIFI_INIT_CONFIG_DEFAULT();
+    /* Lean Wi-Fi buffers (the same profile wardrive's "Transfer over Wi-Fi"
+     * uses) keep the footprint small, so that after the export tears the radio
+     * down another radio app — the detector's handshake capture, which needs a
+     * big monitor-mode RX allocation — can still get its memory. The default
+     * config reserves far more RX/TX buffer RAM than a file transfer needs. */
+    config.static_rx_buf_num = 2;
+    config.dynamic_rx_buf_num = 8;
+    if (config.dynamic_tx_buf_num > 8)
+    {
+        config.dynamic_tx_buf_num = 8;
+    }
+    config.rx_ba_win = 2;
+    config.mgmt_sbuf_num = 6;
+    config.rx_mgmt_buf_num = 2;
     return poom_hs_link_init_sta_with_config(&config);
 }
 
