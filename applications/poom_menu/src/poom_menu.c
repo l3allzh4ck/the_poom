@@ -539,13 +539,6 @@ static void action_wifi_detector_(void)
     menu_wifi_detector_show();
 }
 
-static void action_handshake_crack_(void)
-{
-    detach_menu_();
-    vTaskDelay(pdMS_TO_TICKS(180U));
-    menu_handshake_crack_show();
-}
-
 static void action_handshake_vault_(void)
 {
     detach_menu_();

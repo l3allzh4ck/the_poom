@@ -182,14 +182,16 @@ static esp_err_t list_by_ext(httpd_req_t *r, const char *ext, unsigned *shown)
         }
         char path[256];
         struct stat st;
-        snprintf(path, sizeof(path), "%s/%s", HS_DIR, e->d_name);
+        /* safe_name() already bounds the name to <=64 bytes; the %.64s
+         * precision makes that explicit for -Wformat-truncation. */
+        snprintf(path, sizeof(path), "%s/%.64s", HS_DIR, e->d_name);
         if (stat(path, &st) || !S_ISREG(st.st_mode))
         {
             continue;
         }
         char chunk[256];
         snprintf(chunk, sizeof(chunk),
-                 "<p><a href=\"/download?file=%s\">%s</a> (%lu bytes)</p>",
+                 "<p><a href=\"/download?file=%.64s\">%.64s</a> (%lu bytes)</p>",
                  e->d_name, e->d_name, (unsigned long)st.st_size);
         if ((result = httpd_resp_sendstr_chunk(r, chunk)) != ESP_OK)
         {
