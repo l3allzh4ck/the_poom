@@ -44,6 +44,7 @@
 #include "poom_secrets_store.h"
 #include "poom_ui_keyboard.h"
 #include "poom_wifi_ctrl.h"
+#include "poom_hs_link.h"
 #include "poom_wifi_profile_store.h"
 #include "sd_card.h"
 
@@ -555,7 +556,7 @@ static void hv_request_connect_(const char *ssid, const char *pass)
 /* Decide how to reach the Pi and begin sending (called on A in DETAIL). */
 static void hv_begin_send_(void)
 {
-    if (poom_wifi_ctrl_sta_has_ip())
+    if (poom_hs_link_sta_has_ip())
     {
         s_send_after_ip = false;
         s_state = HV_SENDING;
@@ -586,7 +587,7 @@ static void hv_enter_edit_url_(void)
 
 static void hv_update_connect_(void)
 {
-    if (poom_wifi_ctrl_sta_has_ip())
+    if (poom_hs_link_sta_has_ip())
     {
         if (s_send_after_ip)
         {
@@ -599,7 +600,7 @@ static void hv_update_connect_(void)
     }
     if ((hv_now_ms_() - s_connect_start_ms) >= HV_CONNECT_TIMEOUT_MS)
     {
-        (void)poom_wifi_ctrl_sta_disconnect();
+        (void)poom_hs_link_sta_disconnect();
         printf("[HV] join timeout (attempt %u/%u)\n",
                (unsigned)s_connect_attempt, (unsigned)HV_CONNECT_ATTEMPTS);
         if (s_connect_attempt < HV_CONNECT_ATTEMPTS)
@@ -839,12 +840,12 @@ static void hv_button_cb_(const poom_sbus_msg_t *msg, void *user_ctx)
                 s_state = HV_DETAIL;
                 break;
             case HV_CONNECTING:
-                (void)poom_wifi_ctrl_sta_disconnect();
+                (void)poom_hs_link_sta_disconnect();
                 s_send_after_ip = false;
                 s_state = HV_DETAIL;
                 break;
             case HV_RESULT:
-                (void)poom_wifi_ctrl_sta_disconnect();
+                (void)poom_hs_link_sta_disconnect();
                 s_state = HV_LIST;
                 break;
             default:
@@ -923,7 +924,7 @@ static void hv_button_cb_(const poom_sbus_msg_t *msg, void *user_ctx)
         case HV_RESULT:
             if (ev.button == BTN_A)
             {
-                (void)poom_wifi_ctrl_sta_disconnect();
+                (void)poom_hs_link_sta_disconnect();
                 s_state = HV_LIST;
             }
             break;
@@ -977,8 +978,10 @@ static esp_err_t hv_exit_(void)
         s_buttons_subscribed = false;
     }
 
-    (void)poom_wifi_ctrl_sta_disconnect();
-    (void)poom_wifi_ctrl_unregister_cb();
+    /* Full private-link teardown: stop + deinit the driver and restore the
+     * netif state we borrowed, so the stock manager starts clean next time. */
+    (void)poom_hs_link_deinit();
+    (void)poom_hs_link_unregister_cb();
 
     (void)poom_sbus_publish(POOM_MENU_RESUME_TOPIC, &token, sizeof(token), 0);
     return ESP_OK;
@@ -1009,11 +1012,22 @@ static void hv_task_(void *arg)
             esp_err_t status;
 
             s_connect_request_pending = false;
-            (void)poom_wifi_ctrl_set_promiscuous(false);
             printf("[HV] join %u/%u ssid='%s' pass=%s\n",
                    (unsigned)s_connect_attempt, (unsigned)HV_CONNECT_ATTEMPTS,
                    s_connect_ssid, (s_connect_pass[0] != '\0') ? "yes" : "none");
-            status = poom_wifi_ctrl_sta_connect(
+            /* Hand the radio to the private station link (the proven wardrive
+             * transfer path). First force the stock manager fully off: clear any
+             * monitor mode, drop its STA, and de-init its driver so the private
+             * bring-up starts from a clean ESP_ERR_WIFI_NOT_INIT state. This is
+             * the fix for the silent-no-association join bug. Only the first
+             * attempt needs the teardown; retries reuse the owned link. */
+            if (!poom_hs_link_owned())
+            {
+                (void)poom_wifi_ctrl_set_promiscuous(false);
+                (void)poom_wifi_ctrl_sta_disconnect();
+                (void)poom_wifi_ctrl_deinit();
+            }
+            status = poom_hs_link_sta_connect(
                 s_connect_ssid,
                 (s_connect_pass[0] != '\0') ? s_connect_pass : NULL);
             printf("[HV] sta_connect rc=%s\n", esp_err_to_name(status));
@@ -1089,10 +1103,12 @@ void app_hs_vault(void)
         (void)snprintf(s_pi_url, sizeof(s_pi_url), "%s", HV_DEF_URL);
     }
 
-    (void)poom_wifi_ctrl_init_sta();
-    (void)poom_wifi_ctrl_set_promiscuous(false); /* clear monitor mode a capture app may have left on */
+    /* Do NOT bring the radio up here: the private station link owns Wi-Fi and
+     * is started lazily at send time (hv_request_connect_ -> task), after the
+     * stock manager has been de-initialised. Bringing up the stock STA on entry
+     * was what left the driver in a half-state that never associated. */
     poom_wifi_profile_store_load(s_profiles, POOM_WIFI_PROFILE_MAX, &s_profile_count);
-    (void)poom_wifi_ctrl_register_cb(hv_wifi_evt_cb_, NULL);
+    (void)poom_hs_link_register_cb(hv_wifi_evt_cb_, NULL);
     printf("[HV] start: %u profile(s)\n", (unsigned)s_profile_count);
 
     if (!s_buttons_subscribed)
