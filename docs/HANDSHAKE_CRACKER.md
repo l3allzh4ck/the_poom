@@ -25,17 +25,43 @@ It recovers only weak or default pre-shared keys; it is not a brute-forcer (see
 - **Built-in list:** 230 common default / weak-pattern keys (numeric patterns
   from real cracked-WPA data, keyboard walks, and generic factory/default
   words). Deliberately small and default-focused, not a general passphrase list.
-- **SD-card wordlists:** stream any `.txt`/`.lst`/`.dic`/`.dict` from
-  `/sdcard/wordlists`, tried as-is. A pre-pass counts valid (8–63 char) lines,
-  then cracking shows tried/total, %, and live PSK/s. A "may take a long time"
-  warning is shown before a large SD run.
+- **SD-card wordlists:** run *your own* dictionary files from the SD card (not
+  just the built-in list) — see [Bring your own wordlist](#bring-your-own-wordlist-sd-card).
 
 ### Modes (confirm screen, cycle with LEFT/RIGHT, A to start)
-- **QUICK** — the 230 keys with as-is / Capitalize / `+!` / Capitalize+`!`
-  rules (~606 candidates, roughly 70 s). After a QUICK miss, **A:MORE** runs the
-  remaining rules without repeating anything already tried.
-- **SMART** — all rules plus ESSID-derived candidates (~1140, roughly 2 min).
-- **SD LIST** — pick a wordlist file and stream it.
+QUICK and SMART both run the built-in 230-key list — the difference is how many
+rule variations each key is tried with.
+
+- **QUICK** — each key four ways: **as-is**, **Capitalized**, **+`!`**, and
+  **Capitalized +`!`** (e.g. `password` → `password`, `Password`, `password!`,
+  `Password!`). ~606 candidates, roughly 70 s. The most common weak transforms,
+  fast.
+- **SMART** — everything QUICK does, **plus** three more suffix rules (**+`1`**,
+  **+`123`**, **Capitalized +`1`**), **and** it also runs the network's own name
+  (**ESSID**) through all of those rules. ~1140 candidates, roughly 2 min —
+  about double the coverage.
+- **SD LIST** — run one of your own wordlist files from the SD card (see below).
+
+After a QUICK miss, **A:MORE** runs *only* the extra SMART rules (never what
+QUICK already tried), so QUICK → A:MORE equals a full SMART run with no repeated
+work. Capitalize applies only to keys that contain a real word (a run of ≥2
+letters), so it's skipped for all-digit or keyboard-walk keys like `12345678`.
+
+### Bring your own wordlist (SD card)
+You are not limited to the built-in 230-key list — put your own dictionary
+files on the SD card and run them as a full dictionary attack:
+
+1. Create a `wordlists` folder at the SD-card root: `/sdcard/wordlists/`.
+2. Copy your wordlist files into it — plain text, one candidate per line. Files
+   ending in `.txt`, `.lst`, `.dic`, or `.dict` are listed.
+3. In the cracker's confirm screen, cycle to **SD LIST**, press **A**, and pick
+   your file. Every line of WPA-valid length (8–63 chars) is tried against the
+   handshake, with a live tried / total, %, and PSK/s readout, and **B:CANCEL**
+   at any time. A "may take a long time" warning is shown first.
+
+At ~9 PSK/s a ~7,000-word list takes roughly 15 minutes, so trim large dumps to
+likely candidates — million-line lists (rockyou, weakpass) aren't practical to
+run in full on-device; extract a top-N from them instead.
 
 ### Attempt journal
 - Per-AP record (keyed by BSSID + ESSID) of which lists were tried and the
@@ -74,5 +100,7 @@ It recovers only weak or default pre-shared keys; it is not a brute-forcer (see
 - ESP-IDF v6.1, target `esp32c5` (also builds `esp32c6`). Run `idf.py fullclean`
   once after adding the new source files (the app-pack `CMakeLists.txt` globs
   sources at configure time), then `idf.py build flash monitor`.
-- The crypto hot loop is pinned to `-O2` in `applications/poom_app_pack/
-  CMakeLists.txt` so it stays optimised regardless of the global build type.
+- The crypto hot loop (`poom_handshake_crack.c`) is compiled at `-O2` —
+  overriding the project's default optimization level for just that file — so
+  cracking speed stays up regardless of the global build type. Set via
+  `set_source_files_properties` in `applications/poom_app_pack/CMakeLists.txt`.
