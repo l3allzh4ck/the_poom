@@ -230,6 +230,26 @@ static uint8_t poomgotchi_display_count_(uint16_t count)
     return (count > 99U) ? 99U : (uint8_t)count;
 }
 
+/* Animated pet face for the capture screen: blinks, glances left/right while
+ * idle, and widens its eyes when there is activity (clients/EAPOL seen) so the
+ * capture screen feels alive. Time-driven; same 5-char width to avoid jitter. */
+static const char *poomgotchi_face_(bool active)
+{
+    uint32_t t = poomgotchi_now_ms_();
+
+    if((t % 3200U) < 300U) {
+        return "(-_-)"; /* brief blink roughly every ~3 s (>=1 refresh so it shows) */
+    }
+    if(active) {
+        return ((t / 250U) & 1U) ? "(O_O)" : "(o_o)"; /* excited flicker on activity */
+    }
+    switch((t / 1200U) % 8U) {
+        case 2:  return "(<_<)"; /* glance left  */
+        case 5:  return "(>_>)"; /* glance right */
+        default: return "(o_o)";
+    }
+}
+
 static void poomgotchi_draw_(void)
 {
     char line[24];
@@ -254,7 +274,9 @@ static void poomgotchi_draw_(void)
     } else if(s_screen == POOMGOTCHI_SCREEN_CAPTURE) {
         poom_pcap_wifi_handshake_status_t hs = {0};
         (void)poom_pcap_manager_wifi_handshake_get_status(&hs);
-        (void)snprintf(line, sizeof(line), "(o_o) %s C%u%s", poomgotchi_policy_label_(),
+        (void)snprintf(line, sizeof(line), "%s %s C%u%s",
+                       poomgotchi_face_((hs.client_count > 0U) || (hs.eapol_message_mask != 0U)),
+                       poomgotchi_policy_label_(),
                        target != NULL ? (unsigned)target->primary : 0U,
                        s_include_5g ? "+5G" : "");
         poom_arduboy_set_cursor(POOMGOTCHI_TEXT_X, POOMGOTCHI_ROW0_Y);
