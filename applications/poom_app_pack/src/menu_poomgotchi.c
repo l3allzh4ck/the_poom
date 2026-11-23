@@ -31,6 +31,7 @@
 #define POOMGOTCHI_RESULT_MS          (1500U)
 #define POOMGOTCHI_ASSIST_WAIT_MS     (6000U)
 #define POOMGOTCHI_DEAUTH_MIN_MS      (10000U)
+#define POOMGOTCHI_DIAG_MS            (2000U)  /* [PG] capture diagnostics throttle (issue #45) */
 #define POOMGOTCHI_HEADER_H           (11)
 #define POOMGOTCHI_BOX_Y              (12)
 #define POOMGOTCHI_BOX_H              (40)
@@ -114,6 +115,7 @@ static uint8_t s_target_index;
 static poomgotchi_stats_t s_stats;
 static esp_err_t s_last_error;
 static uint32_t s_capture_started_ms;
+static uint32_t s_last_diag_ms;
 static uint32_t s_result_until_ms;
 static uint32_t s_last_deauth_ms;
 static bool s_result_captured;
@@ -447,6 +449,7 @@ static bool poomgotchi_send_deauth_(void)
     poom_wifi_attacks_broadcast_once(target);
     s_last_deauth_ms = poomgotchi_now_ms_();
     ++s_stats.deauths;
+    printf("[PG] deauth sent (policy=%s)\n", poomgotchi_policy_label_());
     poomgotchi_request_render_();
     return true;
 }
@@ -461,6 +464,33 @@ static void poomgotchi_remember_capture_file_(void)
     name = strrchr(path, '/');
     name = (name != NULL) ? (name + 1) : path;
     (void)snprintf(s_capture_file, sizeof(s_capture_file), "%.20s", name);
+}
+
+/* Serial diagnostics for issue #45 (POOMGOTCHI handshake capture). Logging only;
+ * no behaviour change. Prints one [PG] line with the current target, channel,
+ * BSSID, and the live handshake status (beacon heard, clients/deauths seen, the
+ * EAPOL M1..M4 mask, PMKID and valid-pair counts, and whether an SD file is open
+ * vs UART-only). Lets us see on the serial monitor exactly where capture breaks. */
+static void poomgotchi_diag_(const char *phase, const poom_pcap_wifi_handshake_status_t *hs)
+{
+    const wifi_ap_record_t *t = poomgotchi_target_();
+    const uint8_t zero[6] = {0};
+    const uint8_t *b = (t != NULL) ? t->bssid : zero;
+
+    printf("[PG] %-9s idx=%u/%u ch=%u bssid=%02X:%02X:%02X:%02X:%02X:%02X ssid=%.20s "
+           "beacon=%d cli=%u deauth=%u mask=%X pmkid=%u pair=%u sd=%s\n",
+           (phase != NULL) ? phase : "?",
+           (unsigned)s_target_index, (unsigned)s_target_count,
+           (t != NULL) ? (unsigned)t->primary : 0U,
+           b[0], b[1], b[2], b[3], b[4], b[5],
+           (t != NULL) ? (const char *)t->ssid : "",
+           (hs != NULL) ? (int)hs->has_beacon : 0,
+           (hs != NULL) ? (unsigned)hs->client_count : 0U,
+           (hs != NULL) ? (unsigned)hs->deauth_count : 0U,
+           (hs != NULL) ? (unsigned)hs->eapol_message_mask : 0U,
+           (hs != NULL) ? (unsigned)hs->pmkid_count : 0U,
+           (hs != NULL) ? (unsigned)hs->valid_pair_count : 0U,
+           (s_capture_file[0] != '\0') ? s_capture_file : "UART/none");
 }
 
 static void poomgotchi_start_capture_(void)
@@ -493,6 +523,8 @@ static void poomgotchi_start_capture_(void)
     s_capture_running = true;
     s_capture_started_ms = poomgotchi_now_ms_();
     ++s_stats.targets_tried;
+    s_last_diag_ms = poomgotchi_now_ms_();
+    poomgotchi_diag_("start", NULL);
     s_screen = POOMGOTCHI_SCREEN_CAPTURE;
     poomgotchi_request_render_();
 }
@@ -525,6 +557,7 @@ static void poomgotchi_finish_capture_(bool captured)
     poom_pcap_wifi_handshake_status_t hs = {0};
 
     (void)poom_pcap_manager_wifi_handshake_get_status(&hs);
+    poomgotchi_diag_(captured ? "DONE-ok" : "DONE-miss", &hs);
     poomgotchi_record_capture_observations_(&hs, captured);
     poomgotchi_remember_capture_file_();
     s_result_captured = captured;
@@ -702,6 +735,10 @@ static void poomgotchi_task_(void *arg)
         if(s_screen == POOMGOTCHI_SCREEN_CAPTURE) {
             poom_pcap_wifi_handshake_status_t hs = {0};
             (void)poom_pcap_manager_wifi_handshake_get_status(&hs);
+            if(poomgotchi_elapsed_(s_last_diag_ms, POOMGOTCHI_DIAG_MS)) {
+                s_last_diag_ms = poomgotchi_now_ms_();
+                poomgotchi_diag_("tick", &hs);
+            }
             if((hs.valid_pair_count > 0U) || (hs.pmkid_count > 0U)) {
                 poomgotchi_finish_capture_(true);
             } else if((s_policy == POOMGOTCHI_POLICY_ASSIST) && !s_assist_sent &&
