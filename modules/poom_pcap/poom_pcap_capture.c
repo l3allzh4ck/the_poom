@@ -2042,6 +2042,25 @@ bool poom_pcap_manager_wifi_handshake_get_status(poom_pcap_wifi_handshake_status
     return true;
 }
 
+size_t poom_pcap_manager_wifi_handshake_get_clients(uint8_t (*out)[6], size_t max)
+{
+    size_t n = 0U;
+
+    if ((out == NULL) || (max == 0U) || (s_hs == NULL))
+    {
+        return 0U;
+    }
+    for (size_t i = 0U; (i < POOM_PCAP_HANDSHAKE_CLIENT_MAX) && (n < max); i++)
+    {
+        if (s_hs->clients[i].used)
+        {
+            (void)memcpy(out[n], s_hs->clients[i].mac, 6U);
+            n++;
+        }
+    }
+    return n;
+}
+
 int8_t poom_pcap_manager_sniffer_zigbee_get_rssi(void)
 {
 #if defined(CONFIG_IDF_TARGET_ESP32C5) || defined(CONFIG_IDF_TARGET_ESP32C6)

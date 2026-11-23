@@ -373,6 +373,19 @@ int8_t poom_pcap_manager_sniffer_zigbee_get_rssi(void);
  */
 bool poom_pcap_manager_wifi_handshake_get_status(poom_pcap_wifi_handshake_status_t *out_status);
 
+/**
+ * @brief Copy up to @p max observed client MACs for the current handshake capture.
+ *
+ * Writes the MAC of each station seen exchanging data with the target BSSID into
+ * @p out (a caller array of 6-byte rows) and returns how many were written.
+ * Intended for authorized deauth targeting of the AP currently being captured.
+ *
+ * @param[out] out Array of 6-byte MAC rows to fill.
+ * @param[in]  max Capacity of @p out in rows.
+ * @return Number of client MACs written (0 if none / not capturing).
+ */
+size_t poom_pcap_manager_wifi_handshake_get_clients(uint8_t (*out)[6], size_t max);
+
 #ifdef __cplusplus
 }
 #endif
