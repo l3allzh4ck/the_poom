@@ -241,8 +241,9 @@ static void poomgotchi_draw_(void)
 
     if(s_screen == POOMGOTCHI_SCREEN_SCAN) {
         const int16_t sweep_x = (int16_t)(8U + ((poomgotchi_now_ms_() / 70U) % 100U));
+        (void)snprintf(line, sizeof(line), "(o_o) SCAN %s", s_include_5g ? "2.4+5G" : "2.4G");
         poom_arduboy_set_cursor(POOMGOTCHI_TEXT_X, POOMGOTCHI_ROW0_Y);
-        (void)poom_arduboy_print(F("(o_o) SCANNING"));
+        (void)poom_arduboy_print(line);
         (void)snprintf(line, sizeof(line), "AP %u TRY %u", (unsigned)s_stats.aps_seen,
                        (unsigned)s_stats.targets_tried);
         poom_arduboy_set_cursor(POOMGOTCHI_TEXT_X, (int16_t)(POOMGOTCHI_ROW0_Y + POOMGOTCHI_ROW_STEP));
