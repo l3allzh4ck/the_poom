@@ -117,6 +117,7 @@ static uint32_t s_capture_started_ms;
 static uint32_t s_result_until_ms;
 static uint32_t s_last_deauth_ms;
 static bool s_result_captured;
+static bool s_include_5g; /* false => 2.4 GHz-only targeting; LEFT/RIGHT toggles 5 GHz (issue #45) */
 static char s_capture_file[POOMGOTCHI_CAPTURE_FILE_LEN];
 
 static void poomgotchi_button_cb_(const poom_sbus_msg_t *msg, void *user);
@@ -252,8 +253,9 @@ static void poomgotchi_draw_(void)
     } else if(s_screen == POOMGOTCHI_SCREEN_CAPTURE) {
         poom_pcap_wifi_handshake_status_t hs = {0};
         (void)poom_pcap_manager_wifi_handshake_get_status(&hs);
-        (void)snprintf(line, sizeof(line), "(o_o) %s C%u", poomgotchi_policy_label_(),
-                       target != NULL ? (unsigned)target->primary : 0U);
+        (void)snprintf(line, sizeof(line), "(o_o) %s C%u%s", poomgotchi_policy_label_(),
+                       target != NULL ? (unsigned)target->primary : 0U,
+                       s_include_5g ? "+5G" : "");
         poom_arduboy_set_cursor(POOMGOTCHI_TEXT_X, POOMGOTCHI_ROW0_Y);
         (void)poom_arduboy_print(line);
         poomgotchi_draw_target_name_(target, (int16_t)(POOMGOTCHI_ROW0_Y + POOMGOTCHI_ROW_STEP));
@@ -332,8 +334,16 @@ static esp_err_t poomgotchi_alloc_session_(void)
 
 static bool poomgotchi_ap_is_usable_(const wifi_ap_record_t *ap)
 {
-    return (ap != NULL) && poom_wifi_ctrl_channel_is_valid(ap->primary) &&
-           (memcmp(ap->bssid, "\0\0\0\0\0\0", 6U) != 0);
+    if((ap == NULL) || !poom_wifi_ctrl_channel_is_valid(ap->primary) ||
+       (memcmp(ap->bssid, "\0\0\0\0\0\0", 6U) == 0)) {
+        return false;
+    }
+    /* 2.4 GHz only unless 5 GHz is toggled on: 5 GHz targets waste dwell and
+     * some channels the C5 cannot tune for monitor capture (issue #45). */
+    if(!s_include_5g && (ap->primary > POOM_WIFI_CTRL_WIFI_CHANNEL_MAX)) {
+        return false;
+    }
+    return true;
 }
 
 static int poomgotchi_history_find_(const uint8_t bssid[6])
@@ -465,36 +475,51 @@ static void poomgotchi_remember_capture_file_(void)
 
 static void poomgotchi_start_capture_(void)
 {
-    const wifi_ap_record_t *target = poomgotchi_target_();
     const uint32_t filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA;
+    uint16_t tries;
 
-    if(target == NULL) {
-        s_screen = POOMGOTCHI_SCREEN_IDLE;
-        poomgotchi_request_render_();
-        return;
-    }
-    if(s_capture_running) {
-        s_last_error = poom_pcap_manager_sniffer_retarget_wifi_handshake(
-            target->primary, filter_mask, target->bssid);
-    } else {
-        s_capture_file[0] = '\0';
-        s_last_error = poom_pcap_manager_sniffer_start_wifi_capture_target(
-            target->primary, filter_mask, target->bssid);
-    }
-    if(s_last_error != ESP_OK) {
+    /* Try targets in priority order. A target that will not start (e.g. a 5 GHz
+     * channel the radio rejects with INVALID_ARG) is skipped to the next one
+     * instead of halting the whole session on the ERROR screen (issue #45). */
+    for(tries = 0U; tries < s_target_count; ++tries) {
+        const wifi_ap_record_t *target = poomgotchi_target_();
+
+        if(target == NULL) break;
+
+        if(s_capture_running) {
+            s_last_error = poom_pcap_manager_sniffer_retarget_wifi_handshake(
+                target->primary, filter_mask, target->bssid);
+        } else {
+            s_capture_file[0] = '\0';
+            s_last_error = poom_pcap_manager_sniffer_start_wifi_capture_target(
+                target->primary, filter_mask, target->bssid);
+        }
+
+        if(s_last_error == ESP_OK) {
+            poomgotchi_remember_capture_file_();
+            s_assist_sent = false;
+            s_capture_running = true;
+            s_capture_started_ms = poomgotchi_now_ms_();
+            ++s_stats.targets_tried;
+            s_screen = POOMGOTCHI_SCREEN_CAPTURE;
+            poomgotchi_request_render_();
+            return;
+        }
+
+        /* Start/retarget failed: the pcap layer has already stopped the sniffer,
+         * so treat the link as down and move on to the next target. */
+        printf("[poomgotchi] skip target ch=%u rc=%s\n",
+               (unsigned)target->primary, esp_err_to_name(s_last_error));
         s_capture_running = false;
-        s_screen = POOMGOTCHI_SCREEN_ERROR;
-        poomgotchi_request_render_();
-        return;
+        ++s_target_index;
+        if(s_target_index >= s_target_count) {
+            s_scan_requested = true; /* exhausted this scan's targets; rescan */
+            return;
+        }
     }
 
-    poomgotchi_remember_capture_file_();
-    s_assist_sent = false;
-    s_capture_running = true;
-    s_capture_started_ms = poomgotchi_now_ms_();
-    ++s_stats.targets_tried;
-    s_screen = POOMGOTCHI_SCREEN_CAPTURE;
-    poomgotchi_request_render_();
+    /* No usable target this round (none left, or none at all). */
+    s_scan_requested = true;
 }
 
 static void poomgotchi_record_capture_observations_(const poom_pcap_wifi_handshake_status_t *hs,
@@ -653,6 +678,10 @@ static void poomgotchi_button_cb_(const poom_sbus_msg_t *msg, void *user)
     } else if(s_screen == POOMGOTCHI_SCREEN_CAPTURE) {
         if(event.button == BUTTON_UP) s_policy_delta = 1;
         else if(event.button == BUTTON_DOWN) s_policy_delta = -1;
+        else if((event.button == BUTTON_LEFT) || (event.button == BUTTON_RIGHT)) {
+            s_include_5g = !s_include_5g; /* toggle 5 GHz targeting (issue #45) */
+            s_scan_requested = true;      /* rebuild the target list for the new band set */
+        }
     }
     poomgotchi_request_render_();
 }
