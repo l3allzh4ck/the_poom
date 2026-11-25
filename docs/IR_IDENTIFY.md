@@ -37,7 +37,7 @@ The checkout at `d126fb1b6f1e114c52b4a8c19839ea65e3a9c24d` produced 93 Mute sign
 2. Press **A** during a group as soon as you see or hear a Mute response. On **ANY TV RESPONSE?**, select **YES** if the sound muted or unmuted, even if a later command restored it. Select **YES (Other Signal)** if the TV did something else. Either response narrows the group. **REPEAT** is selected by default on the group and individual confirmation screens. **B** stops the scan after any press already in flight.
 3. For the final candidates, press **A** to send each individual Mute command and select **YES** only when that press mutes or unmutes the sound. An individual **YES (Other Signal)** is kept for **VIEW OTHER HITS** after the scan. POOM keeps looking for Mute while retaining those responses for the current session. If a positive group cannot be reproduced, the scan returns to its untested candidates. When the scan runs out, choose **SLOW RETRY** for an 800 ms gap between commands or **RESTART** for the default 350 ms gap.
 4. Scroll through compatible profiles with **Up/Down** and open one with **A**. **Left/Right** moves a long profile label. Test the suggested command, or use **Up/Down** to choose another. The suggestion prefers a Volume command whose signal differs across profiles when available. Sending each command requires **A**.
-5. Tap **A** to send. Hold **Left** for two seconds and release to record the result. Choose **CORRECT ACTION** only if the TV did what the displayed button says. Choose **WRONG ACTION** if it did something else or **NO RESPONSE** if nothing happened. If actions differ, go back and try another compatible profile. Confirm at least one additional button to enable saving with **hold A**. Saving includes the full profile. If you marked any buttons as failed, POOM asks before saving. If the verified Mute is the only verification option, the profile can be saved using that confirmation. Enter a name on the on-screen keyboard. Existing names are protected. The file appears under `/ir/remotes/<name>.ir` and can be opened from **THE ZEN → IR UNIV**.
+5. Tap **A** to send. Hold **Left** for two seconds to record the result. Choose **CORRECT ACTION** only if the TV did what the displayed button says. Choose **WRONG ACTION** if it did something else or **NO RESPONSE** if nothing happened. If actions differ, go back and try another compatible profile. Confirm at least one additional button to enable saving with **hold A**. Saving includes the full profile. If you marked any buttons as failed, POOM asks before saving. If the verified Mute is the only verification option, the profile can be saved using that confirmation. Enter a name on the on-screen keyboard. Existing names are protected. The file appears under `/ir/remotes/<name>.ir` and can be opened from **THE ZEN → IR UNIV**.
 
 ## Identify from standby
 
@@ -45,13 +45,12 @@ Open **THE ZEN → IR IDENTIFY** and select **Power On**. Put the TV in standby 
 
 POOM narrows a positive group and asks you to put the TV back in standby before starting the next group. Once three or fewer candidates remain, send and confirm each individually. A confirmed candidate opens the compatible profile list. If needed, **SLOW RETRY** uses a three-second gap. Dedicated Power On signals come first in the index, followed by power toggles, which can also turn a running TV off.
 
-## Repair three buttons on the POOM
+## Find a better profile on the POOM
 
-1. In the remote profile, tap **A** to test a button. Hold **Left** for two seconds and release, then record **CORRECT ACTION**, **WRONG ACTION**, or **NO RESPONSE**. Record a result for three distinct buttons.
-2. Hold **Right** for two seconds and release to relearn up to three failed buttons. For each displayed button, press **A** to arm the receiver and tap the matching button on the original remote. **B** cancels the batch. POOM applies the captures together.
-3. Tap **A** to test each learned button. Hold **A** for two seconds and release to save from any button. The saved `.ir` remote contains the new captures and the profile's other commands.
-
-Learning uses RAW replay with a 38 kHz carrier and 33% duty cycle. Remotes that need a different carrier or an alternating toggle bit can need a different capture method.
+1. Tap **A** to send the selected command. Hold **Left** for two seconds to record what the TV did. For **WRONG ACTION**, pick the actual action from the list or type its name.
+2. Record three distinct responding signals. **NO RESPONSE** is recorded for the button but adds no signal/action pair to the search.
+3. Hold **Right** for two seconds. POOM searches the existing SD profiles for another profile containing all three recorded signal/action pairs. Choose a match and test its buttons. **B** cancels the search or backs out of the results.
+4. Hold **A** for two seconds to save. The holds activate as soon as the two seconds elapse. If the database has no matching profile, POOM returns to the current remote and keeps the observations for this session.
 
 ## Protocols and limits
 
