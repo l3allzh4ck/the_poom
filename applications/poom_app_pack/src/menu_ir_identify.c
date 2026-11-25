@@ -232,7 +232,7 @@ static void draw_progress(bool power_on, unsigned candidates, unsigned group, un
     line_at(34, text);
     poom_arduboy_draw_rect(0, 44, 128, 7, WHITE);
     poom_arduboy_fill_rect(1, 45, (int16_t)(126 * done / total), 5, WHITE);
-    line_at(56, "A:HIT         B:STOP");
+    line_at(56, power_on ? "A:HIT         B:STOP" : "A:MUTED       B:STOP");
     poom_arduboy_display();
 }
 
@@ -296,7 +296,7 @@ static search_result_t verify_candidate(identify_t* app, uint32_t index, unsigne
         do { key = button(portMAX_DELAY); } while(key != BUTTON_A && key != BUTTON_B);
         if(key == BUTTON_B) return SEARCH_EXIT;
         if(ir_file_send(&app->tx, &cmd, app->raw, true) != ESP_OK) return SEARCH_TX_ERROR;
-        const int answer = choose(app->power_on ? "DID TV TURN ON?" : "DID TV RESPOND?",
+        const int answer = choose(app->power_on ? "DID TV TURN ON?" : "DID SOUND TOGGLE?",
                                   response_options, RESPONSE_COUNT, RESPONSE_REPEAT);
         if(answer < 0) return SEARCH_EXIT;
         if(answer == RESPONSE_NO) return SEARCH_NONE;
@@ -372,7 +372,7 @@ static search_result_t search_range(identify_t* app, uint32_t first, unsigned co
                 }
             }
             if(!recent_length) { answer = RESPONSE_NO; break; }
-            answer = hit ? RESPONSE_YES : choose(app->power_on ? "DID TV TURN ON?" : "ANY TV RESPONSE?",
+            answer = hit ? RESPONSE_YES : choose(app->power_on ? "DID TV TURN ON?" : "DID SOUND TOGGLE?",
                                       response_options, RESPONSE_COUNT, RESPONSE_REPEAT);
             if(answer < 0) return SEARCH_EXIT;
         } while(answer == RESPONSE_REPEAT);
