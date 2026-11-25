@@ -100,6 +100,7 @@ typedef struct
     TickType_t gap;
     uint32_t match;
     unsigned invalid;
+    bool power_on;
 } identify_t;
 
 typedef struct
@@ -175,7 +176,7 @@ static int choose(const char* title, const char* const* entries, unsigned count,
 
 static bool open_database(identify_t* app)
 {
-    app->database = fopen(IDENTIFY_DIR "/tv.idx", "rb");
+    app->database = fopen(app->power_on ? IDENTIFY_DIR "/power.idx" : IDENTIFY_DIR "/tv.idx", "rb");
     if(!app->database) return false;
     if(fseek(app->database, 0, SEEK_END) != 0) return false;
     const long bytes = ftell(app->database);
@@ -202,12 +203,12 @@ static bool read_signal(const identify_t* app, uint32_t index, identify_signal_t
            (signal->signal_offset - signal->profiles_offset) % sizeof(identify_profile_t) == 0;
 }
 
-static bool load_mute(identify_t* app, uint32_t index, ir_file_command_t* cmd)
+static bool load_candidate(identify_t* app, uint32_t index, ir_file_command_t* cmd)
 {
     identify_signal_t signal;
     return read_signal(app, index, &signal) &&
            ir_file_read_at(app->database, app->line, app->raw, cmd, signal.signal_offset) &&
-           strcmp(cmd->name, "Mute") == 0 && ir_file_command_valid(cmd);
+           strcmp(cmd->name, app->power_on ? "Power On" : "Mute") == 0 && ir_file_command_valid(cmd);
 }
 
 static void draw_progress(unsigned candidates, unsigned group, unsigned done, unsigned total)
@@ -251,10 +252,10 @@ static uint8_t stop_button(TickType_t timeout, bool can_hit)
     return result;
 }
 
-static search_result_t verify_mute(identify_t* app, uint32_t index, unsigned candidate, unsigned count)
+static search_result_t verify_candidate(identify_t* app, uint32_t index, unsigned candidate, unsigned count)
 {
     ir_file_command_t cmd;
-    if(!load_mute(app, index, &cmd))
+    if(!load_candidate(app, index, &cmd))
     {
         ++app->invalid;
         return SEARCH_NONE;
@@ -266,12 +267,21 @@ static search_result_t verify_mute(identify_t* app, uint32_t index, unsigned can
     const char* const answers[] = {"YES", "NO", "REPEAT"};
     while(true)
     {
-        message("VERIFY MUTE", details, "A:SEND        B:STOP");
+        if(app->power_on)
+        {
+            draw_header("VERIFY POWER ON");
+            line_at(16, details);
+            line_at(32, "TV must be off");
+            line_at(56, "A:SEND        B:STOP");
+            poom_arduboy_display();
+        }
+        else message("VERIFY MUTE", details, "A:SEND        B:STOP");
         uint8_t key;
         do { key = button(portMAX_DELAY); } while(key != BUTTON_A && key != BUTTON_B);
         if(key == BUTTON_B) return SEARCH_EXIT;
         if(ir_file_send(&app->tx, &cmd, app->raw, true) != ESP_OK) return SEARCH_TX_ERROR;
-        const int answer = choose("DID TV RESPOND?", answers, 3, 1);
+        const int answer = choose(app->power_on ? "DID TV TURN ON?" : "DID TV RESPOND?",
+                                  answers, 3, 1);
         if(answer < 0) return SEARCH_EXIT;
         if(answer == 1) return SEARCH_NONE;
         if(answer == 0)
@@ -287,12 +297,12 @@ static search_result_t verify_mute(identify_t* app, uint32_t index, unsigned can
  * The caller keeps the remaining siblings while a positive branch is tried. */
 static search_result_t search_range(identify_t* app, uint32_t first, unsigned count, bool recent_first)
 {
-    if(count <= 3)
+    if(app->power_on || count <= 3)
     {
         for(unsigned step = 0; step < count; ++step)
         {
             const unsigned candidate = recent_first ? count - 1 - step : step;
-            const search_result_t result = verify_mute(app, first + candidate, step, count);
+            const search_result_t result = verify_candidate(app, first + candidate, step, count);
             if(result != SEARCH_NONE) return result;
         }
         return SEARCH_NONE;
@@ -319,7 +329,7 @@ static search_result_t search_range(identify_t* app, uint32_t first, unsigned co
             while(processed < size && !hit)
             {
                 ir_file_command_t cmd;
-                const bool valid = load_mute(app, start + processed, &cmd);
+                const bool valid = load_candidate(app, start + processed, &cmd);
                 uint8_t key = stop_button(0, recent_length != 0);
                 if(key == BUTTON_B) return SEARCH_EXIT;
                 if(key == BUTTON_A) { hit = true; break; }
@@ -585,8 +595,18 @@ static void run_identify(identify_t* app)
     const char* error = NULL;
     if(!app->line || !app->raw) error = "Out of memory";
     else if(sd_card_mount() != ESP_OK) error = "SD unavailable";
-    else if(!open_database(app)) error = "Bad/missing index";
-    else if(!app->header.signals) error = "No Mute signals";
+    else
+    {
+        const char* const modes[] = {"Mute", "Power On"};
+        const int mode = choose("IR IDENTIFY", modes, 2, 0);
+        if(mode < 0) return;
+
+        app->power_on = mode == 1;
+        if(!open_database(app))
+            error = app->power_on ? "Update SD database" : "Bad/missing index";
+        else if(!app->header.signals)
+            error = app->power_on ? "No Power On signals" : "No Mute signals";
+    }
 
     if(error)
     {
@@ -595,12 +615,6 @@ static void run_identify(identify_t* app)
         return;
     }
 
-    char text[32];
-    snprintf(text, sizeof(text), "TV | Signals: %lu", (unsigned long)app->header.signals);
-    message("IR IDENTIFY", text, "A:START       B:BACK");
-    uint8_t key;
-    do { key = button(portMAX_DELAY); } while(key != BUTTON_A && key != BUTTON_B);
-    if(key == BUTTON_B) return;
     ir_tx_config_t config = ir_tx_default_config();
     config.gpio = PIN_NUM_IR_TX;
     if(ir_tx_init(&app->tx, &config, "ir_identify") != ESP_OK)
@@ -623,7 +637,10 @@ static void run_identify(identify_t* app)
             while(button(portMAX_DELAY) != BUTTON_B) {}
         }
         if(result != SEARCH_NONE) break;
-        const int action = choose(app->invalid ? "NO MATCH / BAD DATA" : "NO MUTE MATCH", retry, 2, 0);
+        const char* title = app->invalid ? "NO MATCH / BAD DATA" :
+                            app->power_on ? "NO POWER ON MATCH" : "NO MUTE MATCH";
+        const int action = app->power_on ? choose(title, &retry[1], 1, 0) :
+                                           choose(title, retry, 2, 0);
         if(action < 0) break;
         app->gap = pdMS_TO_TICKS(action == 0 ? 800 : 350);
     }

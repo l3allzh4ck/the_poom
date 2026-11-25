@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Build a versioned POOM TV Mute index and portable Flipper profiles."""
+"""Build a versioned POOM TV discovery indexes and portable Flipper profiles."""
 
 import argparse
 from collections import defaultdict
@@ -31,12 +31,14 @@ ALIASES = {
     "Channel Up": ("ChUp", "Ch+", "ChNext", "ChannelUp", "Channel+", "ChannelNext"),
     "Channel Down": ("ChDn", "ChDown", "Ch-", "ChPrev", "ChannelDown",
                      "Channel-", "ChannelPrev"),
-    "Power": ("Power", "PowerToggle", "OnOff", "Standby"),
+    "Power": ("Power", "0Power", "PowerToggle", "OnOff", "TVPower", "TVOnOff"),
+    "Power On": ("PowerOn", "PowerOn(3a)", "TVPowerOn"),
+    "Power Off": ("PowerOff", "PowerOffOnly", "PowerOff(3b)", "TVPowerOff"),
     "Input": ("Input", "Source", "InputSource"),
     "OK": ("OK", "Enter", "Select"),
     "Back": ("Back", "Return"),
 }
-FUNCTIONS = ("Volume Up", "Volume Down", "Mute", "Power", "Channel Up",
+FUNCTIONS = ("Volume Up", "Volume Down", "Mute", "Power", "Power On", "Power Off", "Channel Up",
              "Channel Down", "Input", "Up", "Down", "Left", "Right", "OK",
              "Back", "Menu", "Home")
 CANONICAL = {re.sub(r"[^a-z0-9+-]", "", alias.lower()): name
@@ -134,9 +136,31 @@ def recommendation(profile, alternatives, profiles):
     return 255
 
 
+def write_index(path, name, groups, signals, profiles):
+    with path.open("wb") as out:
+        out.write(HEADER.pack(b"PID1", len(groups), len(profiles)))
+        index_offset = out.tell()
+        out.write(bytes(SIGNAL.size * len(groups)))
+        index = []
+        for key, members in groups.items():
+            profiles_offset = out.tell()
+            for member in sorted(members):
+                label = profiles[member][0].encode("ascii")
+                hint = recommendation(profiles[member], members - {member}, profiles)
+                out.write(PROFILE.pack(member, hint, label))
+            signal_offset = out.tell()
+            out.write(command_text(name, signals[key]).encode("ascii"))
+            index.append(SIGNAL.pack(signal_offset, profiles_offset, len(members)))
+        out.seek(index_offset)
+        out.writelines(index)
+
+
 def prepare(source, target):
-    groups = defaultdict(set)
-    signals = {}
+    indexes = (
+        ("tv.idx", "Mute", (defaultdict(set), {})),
+        ("power.idx", "Power On", (defaultdict(set), {})),
+    )
+    power_order = set()
     profiles = []
     skipped = 0
     for path in sorted((source / "TVs").rglob("*")):
@@ -158,8 +182,7 @@ def prepare(source, target):
             if identity not in seen:
                 seen.add(identity)
                 commands.append((key[:20], key, signal))
-        mute = {waveform_key(signal): signal for _, key, signal in commands if key == "Mute"}
-        if not mute:
+        if not any(key in ("Mute", "Power On", "Power") for _, key, _ in commands):
             continue
         commands.sort(key=lambda entry: FUNCTIONS.index(entry[1])
                       if entry[1] in FUNCTIONS else len(FUNCTIONS))
@@ -169,12 +192,26 @@ def prepare(source, target):
         label = path.relative_to(source / "TVs").with_suffix("").as_posix()
         label = "".join(c if c.isascii() and c.isprintable() else "?" for c in label)[-63:]
         profiles.append((label, commands))
-        for key, signal in mute.items():
+        for _, name, signal in commands:
+            if name == "Mute":
+                groups, signals = indexes[0][2]
+            elif name in ("Power On", "Power"):
+                groups, signals = indexes[1][2]
+                if name == "Power On":
+                    power_order.add(waveform_key(signal))
+            else:
+                continue
+            key = waveform_key(signal)
             signals.setdefault(key, signal)
             groups[key].add(index)
 
-    if not groups or len(groups) > 4096:
-        raise ValueError(f"Expected 1 to 4096 distinct Mute signals; found {len(groups)}")
+    power_groups, power_signals = indexes[1][2]
+    indexes = (indexes[0], ("power.idx", "Power On", (
+        dict(sorted(power_groups.items(), key=lambda entry: entry[0] not in power_order)),
+        power_signals,
+    )))
+    if not profiles or any(len(groups) > 4096 for _, _, (groups, _) in indexes):
+        raise ValueError("Expected compatible TV profiles and at most 4096 signals per mode")
     profile_dir = target / "profiles"
     profile_dir.mkdir()
     for index, (label, commands) in enumerate(profiles):
@@ -182,22 +219,11 @@ def prepare(source, target):
         text += "".join(command_text(name, signal) for name, _, signal in commands)
         (profile_dir / f"{index:08x}.ir").write_bytes(text.encode("ascii"))
 
-    with (target / "tv.idx").open("wb") as out:
-        out.write(HEADER.pack(b"PID1", len(groups), len(profiles)))
-        index_offset = out.tell()
-        out.write(bytes(SIGNAL.size * len(groups)))
-        index = []
-        for key, members in groups.items():
-            profiles_offset = out.tell()
-            for member in sorted(members):
-                label = profiles[member][0].encode("ascii")
-                hint = recommendation(profiles[member], members - {member}, profiles)
-                out.write(PROFILE.pack(member, hint, label))
-            signal_offset = out.tell()
-            out.write(command_text("Mute", signals[key]).encode("ascii"))
-            index.append(SIGNAL.pack(signal_offset, profiles_offset, len(members)))
-        out.seek(index_offset)
-        out.writelines(index)
+    for filename, name, (groups, signals) in indexes:
+        write_index(target / filename, name, groups, signals, profiles)
+        print(f"{len(groups)} distinct {name} signals, {len(profiles)} profiles, "
+              f"{sum(map(len, groups.values()))} associations")
+    print(f"{skipped} skipped source commands")
 
     shutil.copyfile(source / "LICENSE", target / "LICENSE-Flipper-IRDB.txt")
     try:
@@ -209,11 +235,9 @@ def prepare(source, target):
         "Flipper-IRDB TV profiles, dedicated under CC0-1.0\n"
         "https://github.com/Lucaslhm/Flipper-IRDB\n"
         f"Revision: {revision}\n"
-        "POOM filtered supported signals, normalized names and built a Mute index.\n",
+        "POOM filtered supported signals, normalized names and built Mute and Power On indexes.\n",
         encoding="utf-8",
     )
-    print(f"{len(groups)} distinct Mute signals, {len(profiles)} profiles, "
-          f"{sum(map(len, groups.values()))} associations, {skipped} skipped source commands")
 
 
 def main():

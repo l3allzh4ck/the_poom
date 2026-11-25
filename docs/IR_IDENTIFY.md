@@ -1,6 +1,6 @@
 # IR IDENTIFY
 
-IR IDENTIFY looks for a Mute signal that works with a TV you own or have permission to test. A Mute signal can be shared by many remotes. The results list shows every associated profile in the installed database, and informs you when you confirm a response to another command.
+IR IDENTIFY looks for a Mute or Power On signal that works with a TV you own or have permission to test. A Mute signal can be shared by many remotes. The results list shows every associated profile in the installed database, and informs you when you confirm a response to another command.
 
 ## Prepare the SD card
 
@@ -19,6 +19,7 @@ The destination must be new. When updating, prepare a new directory off-card and
 ir/
   identify/
     tv.idx
+    power.idx
     profiles/
       00000000.ir
       ...
@@ -28,22 +29,28 @@ ir/
     ... saved remotes
 ```
 
-The checkout at `d126fb1b6f1e114c52b4a8c19839ea65e3a9c24d` produced 93 unique Mute signals, 357 profiles and 358 associations. The generator skipped 17 unsupported source commands across the TV collection.
+The checkout at `d126fb1b6f1e114c52b4a8c19839ea65e3a9c24d` produced 93 Mute signals and 96 Power On signals across 388 profiles. The generator skipped 17 unsupported source commands. Existing Mute-only SD cards still work in Mute mode. Regenerate and copy the complete directory to enable Power On.
 
 ## Find and save a remote
 
-1. Open **THE ZEN → IR IDENTIFY**. Aim the POOM IR emitter at the TV and press **A**.
+1. Open **THE ZEN → IR IDENTIFY**. Aim the POOM IR emitter at the TV, select **Mute**, and press **A**.
 2. Press **A** during a group as soon as you see or hear a Mute response. If you watch the full group, answer **YES** if the TV responded at any time, even if a later command restored the original sound. Select **REPEAT** if uncertain. **B** stops the scan after any press already in flight.
 3. For the final candidates, press **A** to send each individual Mute command and select **YES** only when the TV responds to that press. If a positive group cannot be reproduced, the scan returns to its untested candidates. When the scan runs out, choose **SLOW RETRY** for an 800 ms gap between commands or **RESTART** for the default 350 ms gap.
 4. Scroll through compatible profiles with **Up/Down** and open one with **A**. **Left/Right** moves a long profile label. Test the suggested command, or use **Up/Down** to choose another. The suggestion prefers a Volume command whose signal differs across profiles when available. Sending each command requires **A**.
 5. Confirm a response to an additional command, then select **SAVE TO SD**. If the verified Mute is the only verification option, the profile can be saved using that confirmation. Enter a name on the on-screen keyboard. Existing names are protected. The file appears under `/ir/remotes/<name>.ir` and can be opened from **THE ZEN → IR UNIV**.
+
+## Identify from standby
+
+Open **THE ZEN → IR IDENTIFY**, highlight **Power On** and press **A** to start. With the TV off but connected to power, press **A** on the candidate screen to send one command, then allow enough time for the TV to boot. Answer **YES** if it turns on, **NO** to advance, or **REPEAT** to try that candidate again. Use **B** to stop. Successful candidates lead to the same compatible profile selection and save workflow.
+
+Dedicated Power On commands are tested first. The index also includes TV power toggles, which can turn a running TV off, so start with the TV in standby before sending each candidate. The app waits for you to send each candidate individually to give you time to observe the TV's response.
 
 ## Protocols and limits
 
 - Parsed playback uses the POOM RMT driver for NEC, NECext, NEC42, NEC42ext, Samsung32, RC5, RC5X, RC6, SIRC, SIRC15, SIRC20, RCA, Pioneer and Kaseikyo. NECext in prepared files preserves both command bytes. SIRC uses three frames per press. Parsed RC5/RC5X and RC6 alternate their toggle bit on each press within a session.
 - RAW playback preserves supplied timings and frequency within POOM's limits of 10–60 kHz, 7–1,024 intervals and 3 ms–2 s. It removes trailing idle intervals and rounds carrier duty cycle to thousandths. A fixed RAW capture can contain repeated frames or a fixed toggle bit.
 - Deduplication uses encoded parsed payloads, including equivalent NEC and NECext frames, and exact normalized RAW data. Similar RAW captures with different measured timings remain separate candidates. RAW and parsed records may represent the same physical button.
-- The SD database supports up to 4,096 indexed Mute signals and 255 supported commands per profile. Discovery reads only the relevant offsets and reuses one scratch buffer. A verified profile remains compatible for the commands you actually tested.
+- The SD database supports up to 4,096 indexed signals per mode and 255 supported commands per profile. Discovery reads only the relevant offsets and reuses one scratch buffer. A verified profile remains compatible for the commands you actually tested.
 - Legacy IR UNIV parsed remotes preserve their existing playback conventions. IR IDENTIFY exports use a header comment to select full NECext playback when opened in IR UNIV.
 
 ## Build and flash
@@ -62,6 +69,7 @@ Use an empty build directory when changing defaults. For a binary package, use t
 
 - Boot the ESP32-C5 POOM with its SD card inserted. Confirm startup, back navigation and clean relaunch. Repeat with no SD card, a missing index, a truncated index, an unsupported protocol and a missing profile.
 - Test known parsed and RAW-TV profiles. Watch for transient Mute changes, use **A** partway through a group, and confirm that no further unstarted press is emitted. Repeat with **B** during a frame and during the inter-command gap, then verify IR is idle after returning to the menu.
+- With the TV in standby, test Power On discovery. Check the confirmation after the TV boots, then verify a volume command and save the profile.
 - Test all-NO, REPEAT, slow retry, one and two candidates, uneven groups, and a deliberate false group hit that falls back to the other untested ranges.
 - With a logic analyser or IR receiver, check carrier, RAW timing, SIRC spacing and RC5/RC6 toggle bits. Check that another POOM TX caller receives a busy error while IR IDENTIFY owns the pin and can send after it exits.
 - Open a shared-Mute result. Confirm additional commands on one profile, save it under a new name, and replay both parsed and RAW commands through IR UNIV. Check duplicate-name handling, card removal during save, and that a previous remote remains readable.
