@@ -416,22 +416,25 @@ static int direction_slot(uint8_t key)
 static void draw_playback(const char* title, const ir_file_command_t* slots, uint16_t mask,
                           bool modified, const char* last, const char* status)
 {
-    static const uint8_t order[] = {0, 1, 2, 3, SUITE_A_SLOT, SUITE_B_SLOT, 4, 5, 6, 7, SUITE_AB_SLOT};
-    static const char* const labels[] = {"U", "D", "L", "R", "A", "B",
-                                         "A+U", "A+D", "A+L", "A+R", "A+B"};
-    header(title);
-    for(unsigned i = 0; i < SUITE_SLOTS; ++i)
+    static const uint8_t regular[] = {0, 1, 2, 3, SUITE_A_SLOT, SUITE_B_SLOT};
+    static const uint8_t shortcuts[] = {4, 5, 6, 7, SUITE_AB_SLOT};
+    static const char* const labels[] = {"U", "D", "L", "R", "A", "B"};
+    static const char* const fn_labels[] = {"A+U", "A+D", "A+L", "A+R", "A+B"};
+    char heading[22];
+    snprintf(heading, sizeof(heading), modified ? "%.16s [FN]" : "%.21s", title);
+    header(heading);
+    const unsigned entries = modified ? sizeof(shortcuts) : sizeof(regular);
+    for(unsigned i = 0; i < entries; ++i)
     {
-        const unsigned slot = order[i];
+        const unsigned slot = modified ? shortcuts[i] : regular[i];
+        const char* label = modified ? fn_labels[i] : labels[i];
         const char* name = (mask & (1U << slot)) ? slots[slot].name : "-";
-        char text[12];
-        snprintf(text, sizeof(text), "%s:%.*s", labels[i], 9 - (int)strlen(labels[i]), name);
-        text_at(i % 2 ? 60 : 0, (int16_t)(13 + 7 * (i / 2)), text);
+        char text[11];
+        snprintf(text, sizeof(text), "%s:%.*s", label, 9 - (int)strlen(label), name);
+        text_at(i % 2 ? 66 : 0, (int16_t)(15 + 10 * (i / 2)), text);
     }
-    text_at(60, 48, "Hold B:exit");
-    char footer[22];
-    snprintf(footer, sizeof(footer), "%s%.16s", modified ? "[FN] " : "", status ? status : last);
-    text_at(0, 56, footer);
+    text_at(0, 46, "Hold A:FN Hold B:Exit");
+    text_at(0, 56, status ? status : last);
     poom_arduboy_display();
 }
 
@@ -477,7 +480,7 @@ static void play_remote(suite_scratch_t* scratch)
     bool b_down = false;
     TickType_t b_started = 0;
     const TickType_t back_hold = pdMS_TO_TICKS(BACK_HOLD_MS);
-    char last[17] = "Last: -";
+    char last[22] = "Last: -";
     const char* status = NULL;
     while(true)
     {
@@ -547,7 +550,7 @@ static void play_remote(suite_scratch_t* scratch)
         const bool sent = ir_file_read_at(file, scratch->line, scratch->raw, &command, slots[index].offset) &&
                           strcmp(command.name, slots[index].name) == 0 &&
                           ir_file_send(&tx, &command, scratch->raw, full_nec) == ESP_OK;
-        if(sent) snprintf(last, sizeof(last), "Last: %.10s", command.name);
+        if(sent) snprintf(last, sizeof(last), "Last: %.15s", command.name);
         status = sent ? NULL : "Send failed";
     }
     ir_tx_deinit(&tx);
