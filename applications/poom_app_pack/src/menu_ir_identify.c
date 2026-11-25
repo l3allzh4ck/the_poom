@@ -6,6 +6,7 @@
 #include <ctype.h>
 #include <fcntl.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -17,6 +18,7 @@
 #include "freertos/task.h"
 #include "input_events.h"
 #include "ir_file.h"
+#include "ir_rcv.h"
 #include "poom_sbus.h"
 #include "poom_ui_keyboard.h"
 #include "sd_card.h"
@@ -27,6 +29,10 @@
 #define MAX_COMMANDS 255U
 #define RECENT_COUNT 4U
 #define PRESS_DOWN 0U
+#define PRESS_UP 1U
+#define HOLD_FLAG 0x80U
+#define HOLD_MS 2000U
+#define REPAIR_BATCH 3U
 #define NO_BUTTON UINT8_MAX
 #define INDEX_MAGIC "PID1"
 #define PROFILE_MARKER "# POOM IR IDENTIFY\n"
@@ -118,6 +124,8 @@ typedef struct
     long offset;
     char name[IR_FILE_NAME_SIZE];
     uint8_t check;
+    bool marked;
+    ir_raw_signal_t* learned;
 } profile_command_t;
 
 /* The bus can retain a copy of a callback after unsubscribe. Its queue
@@ -125,25 +133,47 @@ typedef struct
 static StaticQueue_t s_button_storage;
 static uint8_t s_button_data[8];
 static QueueHandle_t s_buttons;
+static atomic_bool s_profile_controls;
+static bool s_pending_hold[BUTTON_RIGHT + 1];
+static uint32_t s_pressed_at[BUTTON_RIGHT + 1];
 
 static void button_callback(const poom_sbus_msg_t* msg, void* context)
 {
     if(msg->len < sizeof(button_event_msg_t)) return;
     button_event_msg_t event;
     memcpy(&event, msg->data, sizeof(event));
-    if(event.event == PRESS_DOWN)
+    const bool hold_key = event.button == BUTTON_A || event.button == BUTTON_LEFT ||
+                          event.button == BUTTON_RIGHT;
+    if(hold_key && event.event == PRESS_UP && s_pending_hold[event.button])
     {
-        if(event.button == BUTTON_B)
-            {
-            if(xQueueSendToFront(context, &event.button, 0) != pdPASS)
-            {
-                xQueueReset(context);
-                xQueueSendToFront(context, &event.button, 0);
-            }
+        s_pending_hold[event.button] = false;
+        if(atomic_load(&s_profile_controls))
+        {
+            uint8_t key = event.button;
+            if(event.ts_ms - s_pressed_at[event.button] >= HOLD_MS) key |= HOLD_FLAG;
+            xQueueSend(context, &key, 0);
         }
-        else
-            xQueueSend(context, &event.button, 0);
+        return;
     }
+    if(event.event != PRESS_DOWN) return;
+    if(hold_key)
+    {
+        s_pending_hold[event.button] = atomic_load(&s_profile_controls);
+        if(s_pending_hold[event.button])
+        {
+            s_pressed_at[event.button] = event.ts_ms;
+            return;
+        }
+    }
+    if(event.button == BUTTON_B)
+    {
+        if(xQueueSendToFront(context, &event.button, 0) != pdPASS)
+        {
+            xQueueReset(context);
+            xQueueSendToFront(context, &event.button, 0);
+        }
+    }
+    else xQueueSend(context, &event.button, 0);
 }
 
 static uint8_t button(TickType_t timeout)
@@ -419,7 +449,36 @@ static search_result_t search_range(identify_t* app, uint32_t first, unsigned co
     return SEARCH_NONE;
 }
 
-static bool save_profile(FILE* source, const char* name, char* buffer)
+static bool copy_profile_bytes(FILE* source, FILE* out, char* buffer, long end)
+{
+    while(true)
+    {
+        const long offset = ftell(source);
+        if(offset < 0 || (end >= 0 && offset > end)) return false;
+        size_t wanted = IR_FILE_LINE_SIZE;
+        if(end >= 0 && end - offset < (long)wanted) wanted = (size_t)(end - offset);
+        if(!wanted) return true;
+        const size_t n = fread(buffer, 1, wanted, source);
+        if(ferror(source) || fwrite(buffer, 1, n, out) != n) return false;
+        if(n < wanted) return end < 0;
+    }
+}
+
+static bool write_learned(FILE* out, const profile_command_t* command)
+{
+    const ir_raw_signal_t* raw = command->learned;
+    if(fprintf(out, "name: %s\ntype: raw\nfrequency: %lu\nduty_cycle: 0.%03lu\ndata:",
+               command->name, (unsigned long)raw->carrier_hz, (unsigned long)raw->duty_permille) < 0)
+        return false;
+    for(unsigned i = 0; i < raw->count; ++i)
+    {
+        if(fprintf(out, " %lu", (unsigned long)raw->timings_us[i]) < 0) return false;
+    }
+    return fputs("\n#\n", out) >= 0;
+}
+
+static bool save_profile(identify_t* app, FILE* source, const char* name,
+                         const profile_command_t* commands, unsigned count)
 {
     char filename[21];
     char title[sizeof(filename)];
@@ -450,6 +509,7 @@ static bool save_profile(FILE* source, const char* name, char* buffer)
         unlink(temporary);
         return false;
     }
+    char* buffer = app->line;
     /* Replace the first comment with the user label for the IR UNIV browser. */
     bool ok = fgets(buffer, IR_FILE_LINE_SIZE, source) &&
               strcmp(buffer, "Filetype: IR signals file\n") == 0 &&
@@ -458,19 +518,24 @@ static bool save_profile(FILE* source, const char* name, char* buffer)
               fgets(buffer, IR_FILE_LINE_SIZE, source) && strcmp(buffer, PROFILE_MARKER) == 0 &&
               fprintf(out, "Filetype: IR signals file\nVersion: 1\n# %s\n" PROFILE_MARKER,
                       title) > 0;
-    while(ok)
+    for(unsigned i = 0; ok && i < count; ++i)
     {
-        const size_t n = fread(buffer, 1, IR_FILE_LINE_SIZE, source);
-        ok = fwrite(buffer, 1, n, out) == n && !ferror(source);
-        if(n < IR_FILE_LINE_SIZE) break;
+        if(!commands[i].learned) continue;
+        ir_file_command_t original;
+        ok = copy_profile_bytes(source, out, buffer, commands[i].offset) &&
+             ir_file_read_at(source, buffer, app->raw, &original, commands[i].offset) &&
+             strcmp(original.name, commands[i].name) == 0 &&
+             write_learned(out, &commands[i]);
     }
+    if(ok) ok = copy_profile_bytes(source, out, buffer, -1);
     if(fclose(out) != 0) ok = false;
     if(ok && rename(temporary, destination) == 0) return true;
     unlink(temporary);
     return false;
 }
 
-static void prompt_save(identify_t* app, FILE* source)
+static void prompt_save(identify_t* app, FILE* source, const profile_command_t* commands,
+                        unsigned count)
 {
     poom_ui_keyboard_t keyboard;
     char name[21] = "";
@@ -482,7 +547,7 @@ static void prompt_save(identify_t* app, FILE* source)
         if(key == BUTTON_B) return;
         if(poom_ui_keyboard_handle_button(&keyboard, key) == POOM_UI_KEYBOARD_ACTION_ACCEPT && *name)
         {
-            const bool saved = save_profile(source, name, app->line);
+            const bool saved = save_profile(app, source, name, commands, count);
             message(saved ? "REMOTE SAVED" : "SAVE FAILED",
                     saved ? "Open from IR UNIV" : "Check name or SD", "A:OK");
             uint8_t dismiss;
@@ -490,6 +555,93 @@ static void prompt_save(identify_t* app, FILE* source)
             if(saved || dismiss == BUTTON_B) return;
         }
     }
+}
+
+static void repair_commands(profile_command_t* commands, unsigned count)
+{
+#if defined(PIN_NUM_IR_RX)
+    unsigned marked[REPAIR_BATCH];
+    unsigned found = 0;
+    for(unsigned i = 0; i < count && found < REPAIR_BATCH; ++i)
+    {
+        if(commands[i].marked) marked[found++] = i;
+    }
+    if(found < REPAIR_BATCH)
+    {
+        message("REPAIR REMOTE", "Mark 3 buttons", "B:BACK");
+        while(button(portMAX_DELAY) != BUTTON_B) {}
+        return;
+    }
+
+    ir_rcv_config_t cfg = ir_rcv_default_config();
+    cfg.gpio = PIN_NUM_IR_RX;
+    cfg.clk_hz = 500000U;
+    cfg.pulse_max_ns = 60000000U;
+    cfg.buffer_symbols = IR_RAW_MAX_TIMINGS / 2U + 1U;
+    ir_rcv_handle_t rx = {0};
+    ir_raw_signal_t* captures[REPAIR_BATCH] = {0};
+    esp_err_t err = ir_rcv_init(&rx, &cfg, "ir_repair");
+    bool cancelled = false;
+    for(unsigned i = 0; i < REPAIR_BATCH && err == ESP_OK && !cancelled; ++i)
+    {
+        const char* name = commands[marked[i]].name;
+        message("LEARN BUTTON", name, "A:READY     B:CANCEL");
+        uint8_t key;
+        do { key = button(portMAX_DELAY); } while(key != BUTTON_A && key != BUTTON_B);
+        if(key == BUTTON_B)
+        {
+            cancelled = true;
+            break;
+        }
+
+        err = ir_rcv_start(&rx, &cfg);
+        if(err != ESP_OK) break;
+        draw_header("PRESS ORIGINAL REMOTE");
+        line_at(20, name);
+        line_at(37, "Tap the button once");
+        line_at(56, "B:CANCEL");
+        poom_arduboy_display();
+        while(err == ESP_OK)
+        {
+            if(button(0) == BUTTON_B)
+            {
+                cancelled = true;
+                break;
+            }
+            rmt_rx_done_event_data_t frame;
+            if(!ir_rcv_wait(&rx, &frame, 100)) continue;
+            err = ir_raw_signal_from_capture(frame.received_symbols, frame.num_symbols,
+                                             rx.buffer_symbols, cfg.clk_hz, &captures[i]);
+            if(err == ESP_OK || err == ESP_ERR_NO_MEM) break;
+            err = ir_rcv_start(&rx, &cfg);
+        }
+    }
+    if(rx.channel) ir_rcv_deinit(&rx);
+    if(!cancelled && err == ESP_OK)
+    {
+        for(unsigned i = 0; i < REPAIR_BATCH; ++i)
+        {
+            profile_command_t* command = &commands[marked[i]];
+            free(command->learned);
+            command->learned = captures[i];
+            command->marked = false;
+            command->check = COMMAND_UNTESTED;
+        }
+        message("BUTTONS LEARNED", "Test on TV", "A:OK        B:BACK");
+    }
+    else
+    {
+        for(unsigned i = 0; i < REPAIR_BATCH; ++i) free(captures[i]);
+        if(cancelled) return;
+        message("LEARN FAILED", "Try another capture", "A:OK        B:BACK");
+    }
+#else
+    (void)commands;
+    (void)count;
+    message("LEARN UNAVAILABLE", "No IR receiver", "A:OK        B:BACK");
+#endif
+    uint8_t key;
+    do { key = button(portMAX_DELAY); } while(key != BUTTON_A && key != BUTTON_B);
 }
 
 static void use_profile(identify_t* app, const identify_profile_t* profile)
@@ -525,16 +677,21 @@ static void use_profile(identify_t* app, const identify_profile_t* profile)
     unsigned selected = hint < count ? hint : 0;
     while(true)
     {
+        atomic_store(&s_profile_controls, true);
+        unsigned marked_count = 0;
         bool confirmed = false;
+        bool learned = false;
         bool mismatch = false;
         for(unsigned i = 0; i < count; ++i)
         {
             const profile_command_t* command = &commands[i];
-            mismatch |= command->check == COMMAND_WRONG_ACTION || command->check == COMMAND_NO_RESPONSE;
+            marked_count += command->marked;
+            learned |= command->learned != NULL;
+            mismatch |= command->marked || command->check == COMMAND_WRONG_ACTION || command->check == COMMAND_NO_RESPONSE;
             confirmed |= command->check == COMMAND_MATCH && strncmp(command->name, "Power", 5) != 0 &&
                          (app->power_on || strcmp(command->name, "Mute") != 0);
         }
-        const bool can_save = confirmed || hint >= count;
+        const bool can_save = confirmed || learned || hint >= count;
         if(selected == count && !can_save) selected = 0;
 
         draw_header("COMPATIBLE REMOTE");
@@ -549,28 +706,54 @@ static void use_profile(identify_t* app, const identify_profile_t* profile)
             char text[32];
             line_at(23, command->name);
             snprintf(text, sizeof(text), "%u/%u  %s", selected + 1, count,
-                     command->check == COMMAND_UNTESTED && selected == hint ? "Try first" : status[command->check]);
+                     command->marked ? "Marked" : command->learned && command->check == COMMAND_UNTESTED
+                         ? "Learned" : command->check == COMMAND_UNTESTED && selected == hint
+                         ? "Try first" : status[command->check]);
             line_at(37, text);
         }
-        line_at(56, selected == count ? "A:SAVE        B:BACK" : "A:SEND        B:BACK");
+        char shortcuts[24];
+        snprintf(shortcuts, sizeof(shortcuts), "Hold L/R: repair %u", marked_count);
+        line_at(47, shortcuts);
+        line_at(56, selected == count ? "A:SAVE        B:BACK" : "A:SEND  Hold A:Save");
         poom_arduboy_display();
 
         const unsigned choices = count + can_save;
-        switch(button(portMAX_DELAY))
+        uint8_t key = button(portMAX_DELAY);
+        atomic_store(&s_profile_controls, false);
+        switch(key)
         {
             case BUTTON_UP: selected = (selected + choices - 1) % choices; break;
             case BUTTON_DOWN: selected = (selected + 1) % choices; break;
+            case BUTTON_LEFT | HOLD_FLAG:
+                if(selected < count) commands[selected].marked = !commands[selected].marked;
+                break;
+            case BUTTON_RIGHT | HOLD_FLAG:
+                repair_commands(commands, count);
+                break;
+            case BUTTON_A | HOLD_FLAG:
+                if(!can_save)
+                {
+                    message("SAVE REMOTE", "Confirm a button", "B:BACK");
+                    while(button(portMAX_DELAY) != BUTTON_B) {}
+                    break;
+                }
+                /* fall through */
             case BUTTON_A:
-                if(selected == count)
+                if(selected == count || key == (BUTTON_A | HOLD_FLAG))
                 {
                     const char* const save[] = {"KEEP TESTING", "SAVE FULL PROFILE"};
                     if(!mismatch || choose("SOME BUTTONS FAILED", save, 2, 0) == 1)
-                        prompt_save(app, file);
+                        prompt_save(app, file, commands, count);
                     break;
                 }
-                if(!ir_file_read_at(file, app->line, app->raw, &cmd, commands[selected].offset) ||
-                   strcmp(cmd.name, commands[selected].name) != 0 ||
-                   ir_file_send(&app->tx, &cmd, app->raw, true) != ESP_OK)
+                const profile_command_t* command = &commands[selected];
+                esp_err_t send = ESP_ERR_INVALID_RESPONSE;
+                if(command->learned)
+                    send = ir_tx_send_raw(&app->tx, command->learned, ir_raw_signal_size(command->learned));
+                else if(ir_file_read_at(file, app->line, app->raw, &cmd, command->offset) &&
+                        strcmp(cmd.name, command->name) == 0)
+                    send = ir_file_send(&app->tx, &cmd, app->raw, true);
+                if(send != ESP_OK)
                 {
                     message("SEND FAILED", "Check signal or SD", "A:OK        B:BACK");
                     uint8_t key;
@@ -579,7 +762,7 @@ static void use_profile(identify_t* app, const identify_profile_t* profile)
                 }
                 else
                 {
-                    const int result = choose(cmd.name, verify, 3, 2);
+                    const int result = choose(command->name, verify, 3, 2);
                     if(result >= 0) commands[selected].check = (uint8_t)(COMMAND_MATCH + result);
                 }
                 break;
@@ -588,6 +771,7 @@ static void use_profile(identify_t* app, const identify_profile_t* profile)
         }
     }
 cleanup:
+    for(unsigned i = 0; i < count; ++i) free(commands[i].learned);
     free(commands);
     if(file) fclose(file);
 }

@@ -45,6 +45,14 @@ Open **THE ZEN → IR IDENTIFY** and select **Power On**. Put the TV in standby 
 
 POOM narrows a positive group and asks you to put the TV back in standby before starting the next group. Once three or fewer candidates remain, send and confirm each individually. A confirmed candidate opens the compatible profile list. If needed, **SLOW RETRY** uses a three-second gap. Dedicated Power On signals come first in the index, followed by power toggles, which can also turn a running TV off.
 
+## Repair three buttons on the POOM
+
+1. In the remote profile, select a button that did the wrong thing. Hold **Left** for two seconds and release to mark it. Repeat for two other distinct buttons. Hold **Left** again to remove a mark.
+2. Hold **Right** for two seconds and release. For each displayed button, press **A** to arm the receiver, point the original remote at the POOM, and tap the original button once. **B** cancels the batch. POOM applies the three captures together after the last one succeeds.
+3. Tap **A** on each learned button to test it on the TV. Hold **A** for two seconds and release to open the save flow from the current button. The saved `.ir` remote contains the new captures and the profile's other commands. The SD database is unchanged.
+
+Learning uses RAW replay with a 38 kHz carrier and 33% duty cycle. Remotes that need a different carrier or an alternating toggle bit can need a different capture method.
+
 ## Protocols and limits
 
 - Parsed playback uses the POOM RMT driver for NEC, NECext, NEC42, NEC42ext, Samsung32, RC5, RC5X, RC6, SIRC, SIRC15, SIRC20, RCA, Pioneer and Kaseikyo. NECext in prepared files preserves both command bytes. SIRC uses three frames per press. Parsed RC5/RC5X and RC6 alternate their toggle bit on each press within a session.
