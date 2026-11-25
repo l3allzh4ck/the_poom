@@ -7,7 +7,7 @@ Open **THE ZEN → REMOTE SUITE** to use a custom button layout with a remote fr
 1. Save a profile in **IR IDENTIFY**, or put a Flipper `.ir` file in `/ir/remotes/` on the SD card.
 2. Open **REMOTE SUITE → CREATE REMOTE** and choose the Flipper file. Use **Left/Right** to scroll long names in a list.
 3. Use **Up/Down** to choose a slot and **A** to assign a command. There are eleven slots: the four D-pad directions, standalone **A** and **B**, the four **A + direction** combinations, and **A + B**. The editor shows the POOM control above its assigned remote command. Select **Unassigned** to clear a slot.
-4. Select **SAVE LAYOUT** and give it a name. Each layout is saved under `/ir/suite/`. It contains a copy of the assigned commands, including RAW captures, so you can make multiple layouts from one source and use them independently.
+4. Hold **A** for one second from any slot, or select **SAVE LAYOUT**, then give it a name. Each layout is saved under `/ir/suite/`. It contains a copy of the assigned commands, including RAW captures, so you can make multiple layouts from one source and use them independently.
 
 ## Use a layout
 
@@ -15,7 +15,7 @@ Choose **OPEN REMOTE** and select a saved layout. Press a direction to send its 
 
 ## Edit or delete a layout
 
-- **EDIT REMOTE** opens the current assignments. The assignment list includes the original Flipper file’s commands and the copies already in the layout. Choose **Unassigned** to clear a slot. **SAVE LAYOUT** updates the selected layout under the same name. Older layouts ask you to select their original file once. Saving remembers that link. If the original is unavailable, press **B** at the source picker to edit using the saved commands.
+- **EDIT REMOTE** opens the current assignments. The assignment list includes the original Flipper file’s commands and the copies already in the layout. Choose **Unassigned** to clear a slot. Hold **A** for one second or select **SAVE LAYOUT** to update the selected layout under the same name. Older layouts ask you to select their original file once. Saving remembers that link. If the original is unavailable, press **B** at the source picker to edit using the saved commands.
 - **DELETE REMOTE** shows the selected layout and defaults to **Keep remote**. Select **Delete layout** to remove its copy under `/ir/suite/`. The source Flipper file remains available under `/ir/remotes/`.
 
 ## Hardware checks

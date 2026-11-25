@@ -28,6 +28,8 @@
 #define SUITE_B_SLOT 9U
 #define SUITE_AB_SLOT 10U
 #define BACK_HOLD_MS 1000U
+#define SAVE_HOLD_MS 1000U
+#define MAPPING_SAVE UINT8_MAX
 #define MAX_COMMANDS 255U
 #define MAX_FILES 256U
 #define MAX_FILENAME 255U
@@ -101,6 +103,25 @@ static uint8_t next_press(void)
     return key.button;
 }
 
+static uint8_t next_mapping_key(void)
+{
+    const uint8_t pressed = next_press();
+    if(pressed != BUTTON_A) return pressed;
+
+    const TickType_t start = xTaskGetTickCount();
+    const TickType_t duration = pdMS_TO_TICKS(SAVE_HOLD_MS);
+    while(true)
+    {
+        const TickType_t elapsed = xTaskGetTickCount() - start;
+        suite_key_t key;
+        if(elapsed >= duration || xQueueReceive(s_keys, &key, duration - elapsed) != pdPASS)
+            return MAPPING_SAVE;
+        if(key.button == BUTTON_A && key.event == PRESS_UP)
+            return xTaskGetTickCount() - start >= duration ? MAPPING_SAVE : BUTTON_A;
+        if(key.button != BUTTON_A && key.event == PRESS_DOWN) return key.button;
+    }
+}
+
 static void text_at(int16_t x, int16_t y, const char* text)
 {
     poom_arduboy_set_cursor(x, y);
@@ -111,7 +132,7 @@ static void header(const char* title)
 {
     poom_arduboy_clear();
     poom_arduboy_set_text_size(1);
-    text_at(0, 2, title);
+    text_at(2, 2, title);
     poom_arduboy_fill_rect(0, 0, ARDUBOY_WIDTH, 11, INVERT);
 }
 
@@ -542,23 +563,28 @@ static void configure_remote(suite_scratch_t* scratch, bool editing)
     {
         const unsigned slot = selected == SUITE_SLOTS ? SUITE_SLOTS : order[selected];
         header("MAP REMOTE BUTTONS");
-        text_at(0, 16, selected == SUITE_SLOTS ? "SAVE LAYOUT" : slot_names[slot]);
+        text_at(0, 14, selected == SUITE_SLOTS ? "SAVE LAYOUT" : slot_names[slot]);
         if(selected < SUITE_SLOTS)
         {
-            text_at(0, 32, slots[slot] == NO_COMMAND ? "Unassigned" : commands[slots[slot]].name);
-            char position[12];
-            snprintf(position, sizeof(position), "%u/%u", selected + 1, SUITE_SLOTS);
-            text_at(0, 45, position);
+            char assignment[22];
+            const char* name = slots[slot] == NO_COMMAND ? "Unassigned" : commands[slots[slot]].name;
+            const int prefix = snprintf(assignment, sizeof(assignment), "%u/%u ", selected + 1, SUITE_SLOTS);
+            snprintf(assignment + prefix, sizeof(assignment) - (size_t)prefix, "%.*s",
+                     (int)sizeof(assignment) - prefix - 1, name);
+            text_at(0, 25, assignment);
         }
+        text_at(0, 43, "Hold A:Save Layout");
         text_at(0, 56, selected == SUITE_SLOTS ? "A:SAVE       B:BACK" : "A:ASSIGN     B:BACK");
         poom_arduboy_display();
-        switch(next_press())
+        const uint8_t key = next_mapping_key();
+        switch(key)
         {
             case BUTTON_UP: selected = (selected + SUITE_SLOTS) % (SUITE_SLOTS + 1); break;
             case BUTTON_DOWN: selected = (selected + 1) % (SUITE_SLOTS + 1); break;
             case BUTTON_B: goto cleanup;
+            case MAPPING_SAVE:
             case BUTTON_A:
-                if(selected == SUITE_SLOTS)
+                if(key == MAPPING_SAVE || selected == SUITE_SLOTS)
                 {
                     unsigned i = 0;
                     while(i < SUITE_SLOTS && slots[i] == NO_COMMAND) ++i;
