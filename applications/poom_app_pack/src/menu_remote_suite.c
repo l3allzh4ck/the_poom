@@ -23,14 +23,18 @@
 
 #define SOURCE_DIR SD_CARD_PATH "/ir/remotes"
 #define LAYOUT_DIR SD_CARD_PATH "/ir/suite"
-#define SUITE_SLOTS 8U
+#define SUITE_SLOTS 10U
+#define SUITE_A_SLOT 8U
+#define SUITE_B_SLOT 9U
+#define BACK_HOLD_MS 1000U
 #define MAX_COMMANDS 255U
 #define MAX_FILES 256U
 #define MAX_FILENAME 255U
 #define PRESS_DOWN 0U
 #define PRESS_UP 1U
 #define NO_COMMAND UINT8_MAX
-#define SUITE_LAYOUT_PREFIX "# Remote Suite v1 slots: "
+#define SUITE_LAYOUT_V1 "# Remote Suite v1 slots: "
+#define SUITE_LAYOUT_V2 "# Remote Suite v2 slots: "
 #define FULL_NEC_MARKER "# POOM IR IDENTIFY"
 
 static void resume_menu(void)
@@ -58,7 +62,9 @@ static uint8_t s_queue_data[12 * sizeof(suite_key_t)];
 static QueueHandle_t s_keys;
 
 static const char* const slot_names[SUITE_SLOTS] = {
-    "UP", "DOWN", "LEFT", "RIGHT", "A + UP", "A + DOWN", "A + LEFT", "A + RIGHT"
+    "POOM D-PAD UP", "POOM D-PAD DOWN", "POOM D-PAD LEFT", "POOM D-PAD RIGHT",
+    "POOM D-PAD UP + A", "POOM D-PAD DOWN + A", "POOM D-PAD LEFT + A", "POOM D-PAD RIGHT + A",
+    "POOM A BUTTON", "POOM B BUTTON"
 };
 
 static void button_callback(const poom_sbus_msg_t* msg, void* context)
@@ -66,18 +72,14 @@ static void button_callback(const poom_sbus_msg_t* msg, void* context)
     if(msg->len < sizeof(button_event_msg_t)) return;
     button_event_msg_t event;
     memcpy(&event, msg->data, sizeof(event));
-    if(event.event != PRESS_DOWN && (event.event != PRESS_UP || event.button != BUTTON_A)) return;
+    if(event.event != PRESS_DOWN && (event.event != PRESS_UP || (event.button != BUTTON_A && event.button != BUTTON_B))) return;
 
     const suite_key_t key = {.button = event.button, .event = event.event};
-    if(event.button == BUTTON_B)
+    if(xQueueSend(context, &key, 0) != pdPASS && event.button == BUTTON_B)
     {
-        if(xQueueSendToFront(context, &key, 0) != pdPASS)
-        {
-            xQueueReset(context);
-            xQueueSendToFront(context, &key, 0);
-        }
+        xQueueReset(context);
+        xQueueSend(context, &key, 0);
     }
-    else xQueueSend(context, &key, 0);
 }
 
 static suite_key_t next_key(void)
@@ -206,7 +208,7 @@ static FILE* pick_file(const char* directory, const char* title, char* filename)
 
 /* The layout is a Flipper file whose header declares the occupied slots.
  * Commands are stored in slot order, so the file is independent of its source. */
-static bool read_header(FILE* file, suite_scratch_t* scratch, bool* full_nec, uint8_t* mask)
+static bool read_header(FILE* file, suite_scratch_t* scratch, bool* full_nec, uint16_t* mask)
 {
     *full_nec = false;
     *mask = 0;
@@ -217,12 +219,18 @@ static bool read_header(FILE* file, suite_scratch_t* scratch, bool* full_nec, ui
             return fseek(file, offset, SEEK_SET) == 0;
         scratch->line[strcspn(scratch->line, "\r\n")] = '\0';
         if(strcmp(scratch->line, FULL_NEC_MARKER) == 0) *full_nec = true;
-        if(strncmp(scratch->line, SUITE_LAYOUT_PREFIX, sizeof(SUITE_LAYOUT_PREFIX) - 1) == 0)
+        const bool v1 = strncmp(scratch->line, SUITE_LAYOUT_V1, sizeof(SUITE_LAYOUT_V1) - 1) == 0;
+        const bool v2 = strncmp(scratch->line, SUITE_LAYOUT_V2, sizeof(SUITE_LAYOUT_V2) - 1) == 0;
+        if(v1 || v2)
         {
-            const char* value = scratch->line + sizeof(SUITE_LAYOUT_PREFIX) - 1;
-            if(strlen(value) != 2 || !isxdigit((unsigned char)value[0]) ||
-               !isxdigit((unsigned char)value[1])) return false;
-            *mask = (uint8_t)strtoul(value, NULL, 16);
+            const char* value = scratch->line + sizeof(SUITE_LAYOUT_V1) - 1;
+            const size_t digits = v1 ? 2U : 3U;
+            if(strlen(value) != digits) return false;
+            for(size_t i = 0; i < digits; ++i)
+                if(!isxdigit((unsigned char)value[i])) return false;
+            const unsigned long slots = strtoul(value, NULL, 16);
+            if(slots >= (1UL << SUITE_SLOTS)) return false;
+            *mask = (uint16_t)slots;
         }
     }
     return false;
@@ -281,7 +289,7 @@ static bool save_layout(FILE* source, suite_scratch_t* scratch, bool full_nec,
     for(i = 0; i < SUITE_SLOTS; ++i)
         if(slots[i] != NO_COMMAND) mask |= 1U << i;
     bool ok = mask && fprintf(out, "Filetype: IR signals file\nVersion: 1\n# %s\n"
-                             SUITE_LAYOUT_PREFIX "%02X\n", basename, mask) > 0;
+                             SUITE_LAYOUT_V2 "%03X\n", basename, mask) > 0;
     if(ok && full_nec) ok = fputs(FULL_NEC_MARKER "\n", out) >= 0;
     for(i = 0; ok && i < SUITE_SLOTS; ++i)
         if(slots[i] != NO_COMMAND) ok = copy_record(source, out, scratch, &commands[slots[i]]);
@@ -319,7 +327,7 @@ static void create_remote(suite_scratch_t* scratch)
 
     ir_file_command_t* commands = calloc(MAX_COMMANDS, sizeof(*commands));
     bool full_nec;
-    uint8_t mask;
+    uint16_t mask;
     unsigned count = 0;
     if(commands && read_header(source, scratch, &full_nec, &mask))
     {
@@ -337,16 +345,18 @@ static void create_remote(suite_scratch_t* scratch)
 
     uint8_t slots[SUITE_SLOTS];
     memset(slots, NO_COMMAND, sizeof(slots));
+    static const uint8_t order[] = {0, 1, 2, 3, SUITE_A_SLOT, SUITE_B_SLOT, 4, 5, 6, 7};
     unsigned selected = 0;
     while(true)
     {
+        const unsigned slot = selected == SUITE_SLOTS ? SUITE_SLOTS : order[selected];
         header("MAP REMOTE BUTTONS");
-        text_at(0, 16, selected == SUITE_SLOTS ? "SAVE LAYOUT" : slot_names[selected]);
+        text_at(0, 16, selected == SUITE_SLOTS ? "SAVE LAYOUT" : slot_names[slot]);
         if(selected < SUITE_SLOTS)
         {
-            text_at(0, 32, slots[selected] == NO_COMMAND ? "Unassigned" : commands[slots[selected]].name);
+            text_at(0, 32, slots[slot] == NO_COMMAND ? "Unassigned" : commands[slots[slot]].name);
             char position[12];
-            snprintf(position, sizeof(position), "%u/8", selected + 1);
+            snprintf(position, sizeof(position), "%u/%u", selected + 1, SUITE_SLOTS);
             text_at(0, 45, position);
         }
         text_at(0, 56, selected == SUITE_SLOTS ? "A:SAVE       B:BACK" : "A:ASSIGN     B:BACK");
@@ -377,9 +387,9 @@ static void create_remote(suite_scratch_t* scratch)
                 }
                 else
                 {
-                    const unsigned initial = slots[selected] == NO_COMMAND ? 0 : slots[selected] + 1U;
-                    const int value = pick(slot_names[selected], count + 1, initial, command_label, commands);
-                    if(value >= 0) slots[selected] = value ? (uint8_t)(value - 1) : NO_COMMAND;
+                    const unsigned initial = slots[slot] == NO_COMMAND ? 0 : slots[slot] + 1U;
+                    const int value = pick(slot_names[slot], count + 1, initial, command_label, commands);
+                    if(value >= 0) slots[slot] = value ? (uint8_t)(value - 1) : NO_COMMAND;
                 }
                 break;
             default: break;
@@ -409,7 +419,7 @@ static void play_remote(suite_scratch_t* scratch)
     if(!file) return;
 
     bool full_nec;
-    uint8_t mask;
+    uint16_t mask;
     bool valid = read_header(file, scratch, &full_nec, &mask) && mask;
     ir_file_command_t slots[SUITE_SLOTS] = {0};
     for(unsigned i = 0; valid && i < SUITE_SLOTS; ++i)
@@ -439,33 +449,74 @@ static void play_remote(suite_scratch_t* scratch)
     filename[strlen(filename) - 3] = '\0';
     char title[22];
     snprintf(title, sizeof(title), "%.21s", filename);
+    static const char* const short_names[] = {"UP", "DOWN", "LEFT", "RIGHT", "A", "B"};
     bool modified = false;
-    const char* feedback = "Hold A:shift B:back";
+    bool modifier_used = false;
+    bool b_down = false;
+    TickType_t b_started = 0;
+    const TickType_t back_hold = pdMS_TO_TICKS(BACK_HOLD_MS);
+    const char* feedback = "Hold B:back";
     while(true)
     {
         header(title);
-        const unsigned base = modified ? 4 : 0;
-        for(unsigned i = 0; i < 4; ++i)
+        const unsigned rows = modified ? 4 : 6;
+        for(unsigned i = 0; i < rows; ++i)
         {
+            const unsigned slot = modified ? 4 + i : i < 4 ? i : SUITE_A_SLOT + i - 4;
             char row[22];
-            const char* name = (mask & (1U << (base + i))) ? slots[base + i].name : "-";
-            snprintf(row, sizeof(row), "%s %.12s", slot_names[base + i], name);
-            text_at(0, (int16_t)(14 + i * 10), row);
+            const char* name = (mask & (1U << slot)) ? slots[slot].name : "-";
+            snprintf(row, sizeof(row), "%s%s %.12s", modified ? "A+" : "", short_names[i], name);
+            text_at(0, (int16_t)(13 + i * (modified ? 10 : 7)), row);
         }
         text_at(0, 56, feedback);
         poom_arduboy_display();
 
-        const suite_key_t key = next_key();
-        if(key.button == BUTTON_B) break;
-        if(key.button == BUTTON_A)
+        TickType_t wait = portMAX_DELAY;
+        if(b_down)
         {
-            modified = key.event == PRESS_DOWN;
-            feedback = modified ? "A layer    B:back" : "Hold A:shift B:back";
-            continue;
+            const TickType_t elapsed = xTaskGetTickCount() - b_started;
+            if(elapsed >= back_hold) break;
+            wait = back_hold - elapsed;
         }
-        const int direction = direction_slot(key.button);
-        if(direction < 0) continue;
-        const unsigned index = base + (unsigned)direction;
+        suite_key_t key;
+        if(xQueueReceive(s_keys, &key, wait) != pdPASS) break;
+        unsigned index;
+        if(key.button == BUTTON_B)
+        {
+            if(key.event == PRESS_DOWN)
+            {
+                b_down = true;
+                b_started = xTaskGetTickCount();
+                feedback = "Hold B:back";
+                continue;
+            }
+            if(!b_down) continue;
+            b_down = false;
+            if(xTaskGetTickCount() - b_started >= back_hold || !(mask & (1U << SUITE_B_SLOT))) break;
+            index = SUITE_B_SLOT;
+        }
+        else if(key.button == BUTTON_A)
+        {
+            if(key.event == PRESS_DOWN)
+            {
+                modified = true;
+                modifier_used = false;
+                feedback = "A layer  Hold B:back";
+                continue;
+            }
+            if(!modified) continue;
+            modified = false;
+            feedback = "Hold B:back";
+            if(modifier_used || !(mask & (1U << SUITE_A_SLOT))) continue;
+            index = SUITE_A_SLOT;
+        }
+        else
+        {
+            const int direction = direction_slot(key.button);
+            if(direction < 0) continue;
+            modifier_used |= modified;
+            index = (modified ? 4U : 0U) + (unsigned)direction;
+        }
         if(!(mask & (1U << index)))
         {
             feedback = "Unassigned";
