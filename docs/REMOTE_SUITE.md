@@ -15,7 +15,7 @@ Choose **OPEN REMOTE** and select a saved layout. Press a direction to send its 
 
 ## Edit or delete a layout
 
-- **EDIT REMOTE** opens the current assignments. Move or reuse commands already in the layout, or choose **Unassigned** to clear a slot. **SAVE LAYOUT** updates the selected layout under the same name. To bring in commands that are only in the original Flipper file, use **CREATE REMOTE**.
+- **EDIT REMOTE** opens the current assignments. The assignment list includes the original Flipper file’s commands and the copies already in the layout. Choose **Unassigned** to clear a slot. **SAVE LAYOUT** updates the selected layout under the same name. Older layouts ask you to select their original file once. Saving remembers that link. If the original is unavailable, press **B** at the source picker to edit using the saved commands.
 - **DELETE REMOTE** shows the selected layout and defaults to **Keep remote**. Select **Delete layout** to remove its copy under `/ir/suite/`. The source Flipper file remains available under `/ir/remotes/`.
 
 ## Hardware checks

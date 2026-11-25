@@ -36,9 +36,10 @@
 #define EDIT_STAGE ".suite-new"
 #define PRESS_DOWN 0U
 #define PRESS_UP 1U
-#define NO_COMMAND UINT8_MAX
+#define NO_COMMAND UINT16_MAX
 #define SUITE_LAYOUT_V1 "# Remote Suite v1 slots: "
 #define SUITE_LAYOUT_V2 "# Remote Suite v2 slots: "
+#define SOURCE_PREFIX "# Remote Suite source: "
 #define FULL_NEC_MARKER "# POOM IR IDENTIFY"
 
 static void resume_menu(void)
@@ -129,10 +130,12 @@ typedef const char* (*label_fn_t)(const void* context, unsigned index);
 static int pick(const char* title, unsigned count, unsigned selected, label_fn_t label, const void* context)
 {
     size_t scroll = 0;
+    unsigned first = selected > 2 ? selected - 2 : 0;
     while(true)
     {
+        if(selected < first) first = selected;
+        else if(selected - first >= 3) first = selected - 2;
         header(title);
-        const unsigned first = selected > 2 ? selected - 2 : 0;
         for(unsigned row = 0; row < 3 && first + row < count; ++row)
         {
             const unsigned i = first + row;
@@ -233,12 +236,24 @@ static FILE* pick_file(const char* directory, const char* title, char* filename)
     return file;
 }
 
+static bool valid_source_name(const char* name)
+{
+    const size_t length = strlen(name);
+    if(length <= 3 || length > MAX_FILENAME || strcasecmp(name + length - 3, ".ir") != 0)
+        return false;
+    for(const unsigned char* p = (const unsigned char*)name; *p; ++p)
+        if(*p < 32 || *p == 127 || *p == '/' || *p == '\\' || *p == ':') return false;
+    return true;
+}
+
 /* The layout is a Flipper file whose header declares the occupied slots.
  * Commands are stored in slot order, so the file is independent of its source. */
-static bool read_header(FILE* file, suite_scratch_t* scratch, bool* full_nec, uint16_t* mask)
+static bool read_header(FILE* file, suite_scratch_t* scratch, bool* full_nec,
+                        uint16_t* mask, char* source_name)
 {
     *full_nec = false;
     *mask = 0;
+    if(source_name) source_name[0] = '\0';
     long offset;
     while((offset = ftell(file)) >= 0 && fgets(scratch->line, IR_FILE_LINE_SIZE, file))
     {
@@ -246,6 +261,11 @@ static bool read_header(FILE* file, suite_scratch_t* scratch, bool* full_nec, ui
             return fseek(file, offset, SEEK_SET) == 0;
         scratch->line[strcspn(scratch->line, "\r\n")] = '\0';
         if(strcmp(scratch->line, FULL_NEC_MARKER) == 0) *full_nec = true;
+        if(source_name && strncmp(scratch->line, SOURCE_PREFIX, sizeof(SOURCE_PREFIX) - 1) == 0)
+        {
+            const char* name = scratch->line + sizeof(SOURCE_PREFIX) - 1;
+            if(valid_source_name(name)) memcpy(source_name, name, strlen(name) + 1);
+        }
         const bool v1 = strncmp(scratch->line, SUITE_LAYOUT_V1, sizeof(SUITE_LAYOUT_V1) - 1) == 0;
         const bool v2 = strncmp(scratch->line, SUITE_LAYOUT_V2, sizeof(SUITE_LAYOUT_V2) - 1) == 0;
         if(v1 || v2)
@@ -284,8 +304,17 @@ static bool copy_record(FILE* source, FILE* output, suite_scratch_t* scratch,
     return last == '\n' || fputc('\n', output) != EOF;
 }
 
-static bool write_layout(FILE* source, suite_scratch_t* scratch, bool full_nec,
-                         const ir_file_command_t* commands, const uint8_t* slots,
+typedef struct
+{
+    const char* layout;
+    const char* flipper;
+    const char* source_name;
+    unsigned saved_count;
+    bool full_nec;
+} suite_sources_t;
+
+static bool write_layout(const suite_sources_t* sources, suite_scratch_t* scratch,
+                         const ir_file_command_t* commands, const uint16_t* slots,
                          const char* basename, const char* temp)
 {
     const int fd = open(temp, O_WRONLY | O_CREAT | O_EXCL, 0666);
@@ -303,16 +332,32 @@ static bool write_layout(FILE* source, suite_scratch_t* scratch, bool full_nec,
         if(slots[i] != NO_COMMAND) mask |= 1U << i;
     bool ok = mask && fprintf(out, "Filetype: IR signals file\nVersion: 1\n# %s\n"
                              SUITE_LAYOUT_V2 "%03X\n", basename, mask) > 0;
-    if(ok && full_nec) ok = fputs(FULL_NEC_MARKER "\n", out) >= 0;
+    if(ok && sources->full_nec) ok = fputs(FULL_NEC_MARKER "\n", out) >= 0;
+    if(ok && sources->source_name[0])
+        ok = fprintf(out, SOURCE_PREFIX "%s\n", sources->source_name) > 0;
+
+    FILE* source = NULL;
+    const char* active = NULL;
     for(unsigned i = 0; ok && i < SUITE_SLOTS; ++i)
-        if(slots[i] != NO_COMMAND) ok = copy_record(source, out, scratch, &commands[slots[i]]);
+    {
+        if(slots[i] == NO_COMMAND) continue;
+        const char* path = slots[i] < sources->saved_count ? sources->layout : sources->flipper;
+        if(path != active)
+        {
+            if(source) fclose(source);
+            source = fopen(path, "rb");
+            active = path;
+        }
+        ok = source && copy_record(source, out, scratch, &commands[slots[i]]);
+    }
+    if(source) fclose(source);
     if(fclose(out) != 0) ok = false;
     if(!ok) unlink(temp);
     return ok;
 }
 
-static bool save_layout(FILE* source, suite_scratch_t* scratch, bool full_nec,
-                        const ir_file_command_t* commands, const uint8_t* slots, const char* name)
+static bool save_layout(const suite_sources_t* sources, suite_scratch_t* scratch,
+                        const ir_file_command_t* commands, const uint16_t* slots, const char* name)
 {
     char basename[21];
     unsigned i = 0;
@@ -329,7 +374,7 @@ static bool save_layout(FILE* source, suite_scratch_t* scratch, bool full_nec,
     snprintf(temp, sizeof(temp), LAYOUT_DIR "/%s.tmp", basename);
     struct stat info;
     if(stat(path, &info) == 0 ||
-       !write_layout(source, scratch, full_nec, commands, slots, basename, temp)) return false;
+       !write_layout(sources, scratch, commands, slots, basename, temp)) return false;
     if(rename(temp, path) == 0) return true;
     unlink(temp);
     return false;
@@ -349,8 +394,8 @@ static bool replace_layout(const char* path, const char* staged, const char* bac
     return false;
 }
 
-static void edit_save(FILE** file, suite_scratch_t* scratch, bool full_nec,
-                      const ir_file_command_t* commands, const uint8_t* slots,
+static bool edit_save(const suite_sources_t* sources, suite_scratch_t* scratch,
+                      const ir_file_command_t* commands, const uint16_t* slots,
                       const char* filename)
 {
     char path[LAYOUT_PATH_SIZE];
@@ -364,28 +409,27 @@ static void edit_save(FILE** file, suite_scratch_t* scratch, bool full_nec,
 
     /* A staged file from an interrupted edit has never been committed. */
     unlink(staged);
-    if(!write_layout(*file, scratch, full_nec, commands, slots, title, staged))
-    {
-        notice("SAVE FAILED", "Check the SD card");
-        return;
-    }
-
-    fclose(*file);
-    *file = NULL;
-    if(replace_layout(path, staged, backup))
-    {
-        notice("REMOTE UPDATED", "Use Open Remote");
-        return;
-    }
+    if(!write_layout(sources, scratch, commands, slots, title, staged)) return false;
+    if(replace_layout(path, staged, backup)) return true;
     unlink(staged);
-    *file = fopen(path, "rb");
-    notice("SAVE FAILED", "Check the SD card");
+    return false;
 }
+
+typedef struct
+{
+    const ir_file_command_t* commands;
+    unsigned saved_count;
+    char* label;
+} command_menu_t;
 
 static const char* command_label(const void* context, unsigned index)
 {
-    const ir_file_command_t* commands = context;
-    return index == 0 ? "Unassigned" : commands[index - 1].name;
+    const command_menu_t* menu = context;
+    if(index == 0) return "Unassigned";
+    const char* name = menu->commands[index - 1].name;
+    if(index > menu->saved_count) return name;
+    snprintf(menu->label, IR_FILE_NAME_SIZE + sizeof("Saved "), "Saved %s", name);
+    return menu->label;
 }
 
 static bool name_layout(char* name)
@@ -402,6 +446,16 @@ static bool name_layout(char* name)
     }
 }
 
+static unsigned load_commands(FILE* file, suite_scratch_t* scratch, bool full_nec,
+                              ir_file_command_t* commands, unsigned capacity)
+{
+    unsigned count = 0;
+    ir_file_command_t command;
+    while(count < capacity && ir_file_read(file, scratch->line, scratch->raw, &command))
+        if(!full_nec || ir_file_command_valid(&command)) commands[count++] = command;
+    return ferror(file) ? 0 : count;
+}
+
 static void configure_remote(suite_scratch_t* scratch, bool editing)
 {
     char filename[MAX_FILENAME + 1];
@@ -409,37 +463,78 @@ static void configure_remote(suite_scratch_t* scratch, bool editing)
                              pick_file(SOURCE_DIR, "IMPORT FLIPPER FILE", filename);
     if(!source) return;
 
-    const unsigned capacity = editing ? SUITE_SLOTS + 1 : MAX_COMMANDS;
+    const unsigned capacity = MAX_COMMANDS + (editing ? SUITE_SLOTS : 0);
     ir_file_command_t* commands = calloc(capacity, sizeof(*commands));
     bool full_nec;
     uint16_t mask;
+    char source_name[MAX_FILENAME + 1] = "";
     unsigned count = 0;
-    if(commands && read_header(source, scratch, &full_nec, &mask))
-    {
-        ir_file_command_t command;
-        while(count < capacity && ir_file_read(source, scratch->line, scratch->raw, &command))
-        {
-            if(!full_nec || ir_file_command_valid(&command)) commands[count++] = command;
-        }
-    }
-    if(!count || ferror(source))
+    if(commands && read_header(source, scratch, &full_nec, &mask, editing ? source_name : NULL))
+        count = load_commands(source, scratch, full_nec, commands, editing ? SUITE_SLOTS + 1 : MAX_COMMANDS);
+    fclose(source);
+    if(!count)
     {
         notice("IMPORT FAILED", commands ? "No usable commands" : "Out of memory");
         goto cleanup;
     }
 
-    uint8_t slots[SUITE_SLOTS];
-    memset(slots, NO_COMMAND, sizeof(slots));
+    char layout_path[LAYOUT_PATH_SIZE];
+    char flipper_path[sizeof(SOURCE_DIR) + MAX_FILENAME + 2];
+    uint16_t slots[SUITE_SLOTS];
+    for(unsigned i = 0; i < SUITE_SLOTS; ++i) slots[i] = NO_COMMAND;
+    suite_sources_t sources = {
+        .layout = layout_path, .flipper = flipper_path, .source_name = source_name,
+        .saved_count = editing ? count : 0, .full_nec = full_nec
+    };
     if(editing)
     {
         unsigned command = 0;
         for(unsigned i = 0; i < SUITE_SLOTS; ++i)
-            if(mask & (1U << i)) slots[i] = (uint8_t)command++;
+            if(mask & (1U << i)) slots[i] = (uint16_t)command++;
         if(command != count)
         {
             notice("EDIT FAILED", "Invalid layout");
             goto cleanup;
         }
+
+        snprintf(layout_path, sizeof(layout_path), LAYOUT_DIR "/%s", filename);
+        FILE* original = NULL;
+        if(source_name[0])
+        {
+            snprintf(flipper_path, sizeof(flipper_path), SOURCE_DIR "/%s", source_name);
+            original = fopen(flipper_path, "rb");
+        }
+        char chosen[MAX_FILENAME + 1] = "";
+        if(!original)
+        {
+            notice("LINK FLIPPER FILE", "Choose original file");
+            original = pick_file(SOURCE_DIR, "CHOOSE SOURCE", chosen);
+        }
+        if(original)
+        {
+            bool source_nec;
+            uint16_t ignored;
+            unsigned added = 0;
+            if((!chosen[0] || valid_source_name(chosen)) &&
+               read_header(original, scratch, &source_nec, &ignored, NULL) && source_nec == full_nec)
+                added = load_commands(original, scratch, source_nec, commands + count, MAX_COMMANDS);
+            fclose(original);
+            if(added)
+            {
+                if(chosen[0] && valid_source_name(chosen))
+                {
+                    snprintf(source_name, sizeof(source_name), "%s", chosen);
+                    snprintf(flipper_path, sizeof(flipper_path), SOURCE_DIR "/%s", source_name);
+                }
+                count += added;
+            }
+            else notice("SOURCE UNAVAILABLE", "Using saved commands");
+        }
+    }
+    else
+    {
+        if(valid_source_name(filename)) snprintf(source_name, sizeof(source_name), "%s", filename);
+        snprintf(flipper_path, sizeof(flipper_path), SOURCE_DIR "/%s", filename);
     }
     static const uint8_t order[] = {0, 1, 2, 3, SUITE_A_SLOT, SUITE_B_SLOT, 4, 5, 6, 7, SUITE_AB_SLOT};
     unsigned selected = 0;
@@ -474,13 +569,17 @@ static void configure_remote(suite_scratch_t* scratch, bool editing)
                     }
                     if(editing)
                     {
-                        edit_save(&source, scratch, full_nec, commands, slots, filename);
-                        if(!source) goto cleanup;
+                        if(edit_save(&sources, scratch, commands, slots, filename))
+                        {
+                            notice("REMOTE UPDATED", "Use Open Remote");
+                            goto cleanup;
+                        }
+                        notice("SAVE FAILED", "Check the SD card");
                         break;
                     }
                     char name[21] = "";
                     if(!name_layout(name)) break;
-                    if(save_layout(source, scratch, full_nec, commands, slots, name))
+                    if(save_layout(&sources, scratch, commands, slots, name))
                     {
                         notice("REMOTE SAVED", "Use Open Remote");
                         goto cleanup;
@@ -490,8 +589,11 @@ static void configure_remote(suite_scratch_t* scratch, bool editing)
                 else
                 {
                     const unsigned initial = slots[slot] == NO_COMMAND ? 0 : slots[slot] + 1U;
-                    const int value = pick(slot_names[slot], count + 1, initial, command_label, commands);
-                    if(value >= 0) slots[slot] = value ? (uint8_t)(value - 1) : NO_COMMAND;
+                    char label[IR_FILE_NAME_SIZE + sizeof("Saved ")];
+                    const command_menu_t menu = {.commands = commands, .saved_count = sources.saved_count,
+                                                 .label = label};
+                    const int value = pick(slot_names[slot], count + 1, initial, command_label, &menu);
+                    if(value >= 0) slots[slot] = value ? (uint16_t)(value - 1) : NO_COMMAND;
                 }
                 break;
             default: break;
@@ -499,7 +601,6 @@ static void configure_remote(suite_scratch_t* scratch, bool editing)
     }
 cleanup:
     free(commands);
-    if(source) fclose(source);
 }
 
 static int direction_slot(uint8_t key)
@@ -547,7 +648,7 @@ static void play_remote(suite_scratch_t* scratch)
 
     bool full_nec;
     uint16_t mask;
-    bool valid = read_header(file, scratch, &full_nec, &mask) && mask;
+    bool valid = read_header(file, scratch, &full_nec, &mask, NULL) && mask;
     ir_file_command_t slots[SUITE_SLOTS] = {0};
     for(unsigned i = 0; valid && i < SUITE_SLOTS; ++i)
     {
