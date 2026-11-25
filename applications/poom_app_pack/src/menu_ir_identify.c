@@ -531,8 +531,15 @@ static void prompt_save(identify_t* app, FILE* source)
         if(poom_ui_keyboard_handle_button(&keyboard, key) == POOM_UI_KEYBOARD_ACTION_ACCEPT && *name)
         {
             const bool saved = save_profile(app, source, name);
-            message(saved ? "REMOTE SAVED" : "SAVE FAILED",
-                    saved ? "Open from IR UNIV" : "Check name or SD", "A:OK");
+            if(saved)
+            {
+                draw_header("REMOTE SAVED");
+                line_at(20, "Saved to IR UNIVERSAL");
+                line_at(33, "> Flipper File");
+                line_at(56, "A:OK        B:BACK");
+                poom_arduboy_display();
+            }
+            else message("SAVE FAILED", "Check name or SD", "A:OK        B:BACK");
             uint8_t dismiss;
             do { dismiss = button(portMAX_DELAY); } while(dismiss != BUTTON_A && dismiss != BUTTON_B);
             if(saved || dismiss == BUTTON_B) return;
@@ -674,7 +681,7 @@ static uint32_t pick_replacement(identify_t* app, const uint32_t* matches, unsig
             }
             fclose(profile);
         }
-        draw_header("MATCHING PROFILES");
+        draw_header("3-ACTION MATCHES");
         char position[22];
         snprintf(position, sizeof(position), "%u/%u", selected + 1, count);
         line_at(15, position);
@@ -684,7 +691,7 @@ static uint32_t pick_replacement(identify_t* app, const uint32_t* matches, unsig
         snprintf(position, sizeof(position), "%.21s", visible);
         line_at(28, position);
         line_at(40, visible + strlen(position));
-        line_at(56, "A:OPEN       B:BACK");
+        line_at(56, "A:USE        B:BACK");
         poom_arduboy_display();
         switch(button(portMAX_DELAY))
         {
@@ -749,9 +756,13 @@ static uint32_t find_replacement(identify_t* app, FILE* source, uint32_t current
         if(id % 16U == 0)
         {
             char text[32];
-            snprintf(text, sizeof(text), "Profiles: %lu/%lu", (unsigned long)id,
+            snprintf(text, sizeof(text), "Checked %lu/%lu", (unsigned long)id,
                      (unsigned long)app->header.profiles);
-            message("FINDING REMOTE", text, "B:CANCEL");
+            draw_header("SEARCHING SD");
+            line_at(20, "Matching 3 actions");
+            line_at(34, text);
+            line_at(56, "B:CANCEL");
+            poom_arduboy_display();
         }
         if(id == current) continue;
         FILE* profile = open_profile(id);
@@ -778,7 +789,7 @@ static uint32_t find_replacement(identify_t* app, FILE* source, uint32_t current
         fclose(profile);
     }
     if(match_count) replacement = pick_replacement(app, matches, match_count);
-    else error = "No alternate match";
+    else error = "No 3-action match";
 finish_search:
     free(matches);
 done:
@@ -791,7 +802,7 @@ done:
     return replacement;
 }
 
-static uint32_t use_profile(identify_t* app, const identify_profile_t* profile)
+static uint32_t use_profile(identify_t* app, const identify_profile_t* profile, bool remapped)
 {
     uint32_t replacement = UINT32_MAX;
     FILE* file = open_profile(profile->id);
@@ -825,18 +836,14 @@ static uint32_t use_profile(identify_t* app, const identify_profile_t* profile)
     {
         atomic_store(&s_profile_controls, true);
         unsigned checked = 0;
-        bool confirmed = false;
         bool mismatch = false;
         for(unsigned i = 0; i < count; ++i)
         {
             const profile_command_t* command = &commands[i];
             checked += command->actual[0] != 0;
             mismatch |= command->check == COMMAND_WRONG_ACTION || command->check == COMMAND_NO_RESPONSE;
-            confirmed |= command->check == COMMAND_MATCH && strncmp(command->name, "Power", 5) != 0 &&
-                         (app->power_on || strcmp(command->name, "Mute") != 0);
         }
-        const bool can_save = confirmed || hint >= count;
-        draw_header("COMPATIBLE REMOTE");
+        draw_header(remapped ? "REMAPPED REMOTE" : "COMPATIBLE REMOTE");
         const profile_command_t* command = &commands[selected];
         char text[32];
         line_at(23, command->name);
@@ -886,12 +893,6 @@ static uint32_t use_profile(identify_t* app, const identify_profile_t* profile)
                 if(replacement != UINT32_MAX) goto cleanup;
                 break;
             case BUTTON_A | HOLD_FLAG:
-                if(!can_save)
-                {
-                    message("SAVE REMOTE", "Confirm a button", "B:BACK");
-                    while(button(portMAX_DELAY) != BUTTON_B) {}
-                    break;
-                }
                 {
                     const char* const save[] = {"KEEP TESTING", "SAVE FULL PROFILE"};
                     if(!mismatch || choose("SOME BUTTONS FAILED", save, 2, 0) == 1)
@@ -965,11 +966,13 @@ static void browse_profiles(identify_t* app, uint32_t index, bool other)
                     /* Leave both slots available to the source and destination when saving. */
                     fclose(app->database);
                     app->database = NULL;
+                    bool remapped = false;
                     uint32_t replacement;
-                    while((replacement = use_profile(app, &profile)) != UINT32_MAX)
+                    while((replacement = use_profile(app, &profile, remapped)) != UINT32_MAX)
                     {
                         profile.id = replacement;
                         profile.hint = 0;
+                        remapped = true;
                     }
                     if(!open_database(app))
                     {
