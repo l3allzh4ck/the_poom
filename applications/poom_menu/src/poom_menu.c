@@ -71,6 +71,7 @@
 #include "menu_spectrum.h"
 #include "menu_device_inspector.h"
 #include "menu_wifi_guard.h"
+#include "menu_wardrive.h"
 #include "menu_wifi_csi.h"
 #include "menu_wifi_action.h"
 #include "menu_findmy_beep.h"
@@ -1087,6 +1088,14 @@ static void action_device_inspector_(void)
     menu_device_inspector_show();
 }
 
+/** Hand the shared display and buttons to Wardrive, as for sibling apps. */
+static void action_wardrive_(void)
+{
+    detach_menu_();
+    vTaskDelay(pdMS_TO_TICKS(180U));
+    menu_wardrive_show();
+}
+
 /** Opens the passive Wi-Fi beacon consistency monitor. */
 static void action_wifi_guard_(void)
 {
@@ -1261,6 +1270,7 @@ static const poom_menu_item_t s_apps_beast[] = {
 #endif
     {"WARDRIVING NODE", action_wardrive_node_},
     {"SCAN NET", action_arp_},
+    {"WARDRIVE", action_wardrive_},
     {"SECURITY AUDIT", action_security_audit_},
 
 #if CONFIG_ZB_ENABLED
