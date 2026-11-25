@@ -103,10 +103,19 @@ typedef struct
     bool power_on;
 } identify_t;
 
+typedef enum
+{
+    COMMAND_UNTESTED,
+    COMMAND_MATCH,
+    COMMAND_WRONG_ACTION,
+    COMMAND_NO_RESPONSE,
+} command_check_t;
+
 typedef struct
 {
     long offset;
     char name[IR_FILE_NAME_SIZE];
+    uint8_t check;
 } profile_command_t;
 
 /* The bus can retain a copy of a callback after unsubscribe. Its queue
@@ -481,27 +490,43 @@ static void use_profile(identify_t* app, const identify_profile_t* profile)
         goto cleanup;
     }
 
-    const char* const verify[] = {"YES", "NO"};
+    const char* const verify[] = {"CORRECT ACTION", "WRONG ACTION", "NO RESPONSE"};
+    const char* const status[] = {"Untested", "Confirmed", "Wrong action", "No response"};
     const unsigned hint = profile->hint;
     unsigned selected = hint < count ? hint : 0;
-    bool verified = false;
-    char text[22];
     while(true)
     {
-        draw_header(verified ? "VERIFIED REMOTE" : "COMPATIBLE REMOTE");
+        bool confirmed = false;
+        bool mismatch = false;
+        for(unsigned i = 0; i < count; ++i)
+        {
+            const profile_command_t* command = &commands[i];
+            mismatch |= command->check == COMMAND_WRONG_ACTION || command->check == COMMAND_NO_RESPONSE;
+            confirmed |= command->check == COMMAND_MATCH && strncmp(command->name, "Power", 5) != 0 &&
+                         (app->power_on || strcmp(command->name, "Mute") != 0);
+        }
+        const bool can_save = confirmed || hint >= count;
+        if(selected == count && !can_save) selected = 0;
+
+        draw_header("COMPATIBLE REMOTE");
         if(selected == count)
+        {
             line_at(23, "SAVE TO SD");
+            line_at(37, mismatch ? "Some buttons failed" : "Saves full profile");
+        }
         else
         {
-            line_at(23, commands[selected].name);
-            snprintf(text, sizeof(text), "%u/%u%s", selected + 1, count,
-                     !verified && selected == hint ? "  Try first" : "");
+            const profile_command_t* command = &commands[selected];
+            char text[32];
+            line_at(23, command->name);
+            snprintf(text, sizeof(text), "%u/%u  %s", selected + 1, count,
+                     command->check == COMMAND_UNTESTED && selected == hint ? "Try first" : status[command->check]);
             line_at(37, text);
         }
         line_at(56, selected == count ? "A:SAVE        B:BACK" : "A:SEND        B:BACK");
         poom_arduboy_display();
 
-        const unsigned choices = count + (verified || hint >= count);
+        const unsigned choices = count + can_save;
         switch(button(portMAX_DELAY))
         {
             case BUTTON_UP: selected = (selected + choices - 1) % choices; break;
@@ -509,10 +534,13 @@ static void use_profile(identify_t* app, const identify_profile_t* profile)
             case BUTTON_A:
                 if(selected == count)
                 {
-                    prompt_save(app, file);
+                    const char* const save[] = {"KEEP TESTING", "SAVE FULL PROFILE"};
+                    if(!mismatch || choose("SOME BUTTONS FAILED", save, 2, 0) == 1)
+                        prompt_save(app, file);
                     break;
                 }
                 if(!ir_file_read_at(file, app->line, app->raw, &cmd, commands[selected].offset) ||
+                   strcmp(cmd.name, commands[selected].name) != 0 ||
                    ir_file_send(&app->tx, &cmd, app->raw, true) != ESP_OK)
                 {
                     message("SEND FAILED", "Check signal or SD", "A:OK        B:BACK");
@@ -520,10 +548,10 @@ static void use_profile(identify_t* app, const identify_profile_t* profile)
                     do { key = button(portMAX_DELAY); } while(key != BUTTON_A && key != BUTTON_B);
                     if(key == BUTTON_B) goto cleanup;
                 }
-                else if(!verified && strcmp(cmd.name, "Mute") != 0 &&
-                        strncmp(cmd.name, "Power", 5) != 0)
+                else
                 {
-                    if(choose("DID TV RESPOND?", verify, 2, 1) == 0) verified = true;
+                    const int result = choose(cmd.name, verify, 3, 2);
+                    if(result >= 0) commands[selected].check = (uint8_t)(COMMAND_MATCH + result);
                 }
                 break;
             case BUTTON_B: goto cleanup;

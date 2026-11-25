@@ -1,6 +1,6 @@
 # IR IDENTIFY
 
-IR IDENTIFY looks for a Mute or Power On signal that works with a TV you own or have permission to test. A Mute signal can be shared by many remotes. The results list shows every associated profile in the installed database, and informs you when you confirm a response to another command.
+IR IDENTIFY looks for a Mute or Power On signal that works with a TV you own or have permission to test. A Mute signal can be shared by many remotes. The results list shows every associated profile in the installed database, and tracks which buttons you confirm during the profile test.
 
 ## Prepare the SD card
 
@@ -37,7 +37,7 @@ The checkout at `d126fb1b6f1e114c52b4a8c19839ea65e3a9c24d` produced 93 Mute sign
 2. Press **A** during a group as soon as you see or hear a Mute response. If you watch the full group, answer **YES** if the TV responded at any time, even if a later command restored the original sound. Select **REPEAT** if uncertain. **B** stops the scan after any press already in flight.
 3. For the final candidates, press **A** to send each individual Mute command and select **YES** only when the TV responds to that press. If a positive group cannot be reproduced, the scan returns to its untested candidates. When the scan runs out, choose **SLOW RETRY** for an 800 ms gap between commands or **RESTART** for the default 350 ms gap.
 4. Scroll through compatible profiles with **Up/Down** and open one with **A**. **Left/Right** moves a long profile label. Test the suggested command, or use **Up/Down** to choose another. The suggestion prefers a Volume command whose signal differs across profiles when available. Sending each command requires **A**.
-5. Confirm a response to an additional command, then select **SAVE TO SD**. If the verified Mute is the only verification option, the profile can be saved using that confirmation. Enter a name on the on-screen keyboard. Existing names are protected. The file appears under `/ir/remotes/<name>.ir` and can be opened from **THE ZEN → IR UNIV**.
+5. After each test, choose **CORRECT ACTION** only if the TV did what the displayed button says. Choose **WRONG ACTION** if it did something else or **NO RESPONSE** if nothing happened. If actions differ, go back and try another compatible profile. Confirm at least one additional button to enable **SAVE TO SD**. Saving includes the full profile. If you marked any buttons as failed, POOM asks before saving. If the verified Mute is the only verification option, the profile can be saved using that confirmation. Enter a name on the on-screen keyboard. Existing names are protected. The file appears under `/ir/remotes/<name>.ir` and can be opened from **THE ZEN → IR UNIV**.
 
 ## Identify from standby
 
@@ -50,7 +50,7 @@ POOM narrows a positive group and asks you to put the TV back in standby before 
 - Parsed playback uses the POOM RMT driver for NEC, NECext, NEC42, NEC42ext, Samsung32, RC5, RC5X, RC6, SIRC, SIRC15, SIRC20, RCA, Pioneer and Kaseikyo. NECext in prepared files preserves both command bytes. SIRC uses three frames per press. Parsed RC5/RC5X and RC6 alternate their toggle bit on each press within a session.
 - RAW playback preserves supplied timings and frequency within POOM's limits of 10–60 kHz, 7–1,024 intervals and 3 ms–2 s. It removes trailing idle intervals and rounds carrier duty cycle to thousandths. A fixed RAW capture can contain repeated frames or a fixed toggle bit.
 - Deduplication uses encoded parsed payloads, including equivalent NEC and NECext frames, and exact normalized RAW data. Similar RAW captures with different measured timings remain separate candidates. RAW and parsed records may represent the same physical button.
-- The SD database supports up to 4,096 indexed signals per mode and 255 supported commands per profile. Discovery reads only the relevant offsets and reuses one scratch buffer. A verified profile remains compatible for the commands you actually tested.
+- The SD database supports up to 4,096 indexed signals per mode and 255 supported commands per profile. Discovery reads only the relevant offsets and reuses one scratch buffer. Only buttons confirmed as performing the displayed action are marked as confirmed during the session.
 - Legacy IR UNIV parsed remotes preserve their existing playback conventions. IR IDENTIFY exports use a header comment to select full NECext playback when opened in IR UNIV.
 
 ## Build and flash
