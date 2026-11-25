@@ -81,6 +81,8 @@ idf.py build
 idf.py flash monitor
 ```
 
+For the TV remote finder, see the [IR IDENTIFY setup and usage guide](docs/IR_IDENTIFY.md).
+
 ## Security and Legal
 
 POOM includes offensive-security capabilities intended strictly for:

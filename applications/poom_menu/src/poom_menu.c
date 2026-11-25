@@ -81,6 +81,7 @@
 #include "menu_ssid_spam.h"
 #include "menu_tone.h"
 #include "menu_tv_off.h"
+#include "menu_ir_identify.h"
 #include "menu_wifi_detector.h"
 #include "poom_breakout.h"
 
@@ -967,6 +968,13 @@ static void action_ir_universal_(void)
     menu_ir_universal_show();
 }
 
+static void action_ir_identify_(void)
+{
+    detach_menu_();
+    vTaskDelay(pdMS_TO_TICKS(180U));
+    menu_ir_identify_show();
+}
+
 /**
  * @brief Internal helper for `action_tv_off`.
  *
@@ -1256,6 +1264,7 @@ static const poom_menu_item_t s_apps_zen[] = {
     {"NFC", action_nfc_},
     {"PICOPASS", action_picopass_},
     {"IR UNIV", action_ir_universal_},
+    {"IR IDENTIFY", action_ir_identify_},
     {"POOM WEB", action_cli_web_},
 };
 
