@@ -100,6 +100,8 @@ typedef struct
     TickType_t gap;
     uint32_t match;
     unsigned invalid;
+    unsigned other_count;
+    uint8_t other_hits[(MAX_SIGNALS + 7U) / 8U];
     bool power_on;
 } identify_t;
 
@@ -165,8 +167,9 @@ static int choose(const char* title, const char* const* entries, unsigned count,
         draw_header(title);
         for(unsigned i = 0; i < count; ++i)
         {
-            line_at(16 + 12 * i, i == selected ? ">" : " ");
-            poom_arduboy_set_cursor(12, (int16_t)(16 + 12 * i));
+            const int16_t row = (int16_t)(16 + (count == 4 ? 10 : 12) * i);
+            line_at(row, i == selected ? ">" : " ");
+            poom_arduboy_set_cursor(12, row);
             poom_arduboy_print(entries[i]);
         }
         line_at(56, "A:SELECT  B:BACK");
@@ -232,7 +235,7 @@ static void draw_progress(bool power_on, unsigned candidates, unsigned group, un
     line_at(34, text);
     poom_arduboy_draw_rect(0, 44, 128, 7, WHITE);
     poom_arduboy_fill_rect(1, 45, (int16_t)(126 * done / total), 5, WHITE);
-    line_at(56, power_on ? "A:HIT         B:STOP" : "A:MUTED       B:STOP");
+    line_at(56, "A:HIT         B:STOP");
     poom_arduboy_display();
 }
 
@@ -261,13 +264,26 @@ static uint8_t stop_button(TickType_t timeout, bool can_hit)
     return result;
 }
 
-enum { RESPONSE_YES, RESPONSE_REPEAT, RESPONSE_NO, RESPONSE_COUNT };
+enum { RESPONSE_YES, RESPONSE_REPEAT, RESPONSE_NO, RESPONSE_OTHER, RESPONSE_COUNT };
 
 static const char* const response_options[RESPONSE_COUNT] = {
     [RESPONSE_YES] = "YES",
     [RESPONSE_REPEAT] = "REPEAT",
     [RESPONSE_NO] = "NO",
+    [RESPONSE_OTHER] = "YES (Other Signal)",
 };
+
+static int ask_response(const identify_t* app)
+{
+    return choose(app->power_on ? "DID TV TURN ON?" : "ANY TV RESPONSE?",
+                  response_options, app->power_on ? RESPONSE_OTHER : RESPONSE_COUNT,
+                  RESPONSE_REPEAT);
+}
+
+static bool has_other_hit(const identify_t* app, uint32_t index)
+{
+    return (app->other_hits[index / 8U] & (1U << (index % 8U))) != 0;
+}
 
 static search_result_t verify_candidate(identify_t* app, uint32_t index, unsigned candidate, unsigned count)
 {
@@ -296,10 +312,18 @@ static search_result_t verify_candidate(identify_t* app, uint32_t index, unsigne
         do { key = button(portMAX_DELAY); } while(key != BUTTON_A && key != BUTTON_B);
         if(key == BUTTON_B) return SEARCH_EXIT;
         if(ir_file_send(&app->tx, &cmd, app->raw, true) != ESP_OK) return SEARCH_TX_ERROR;
-        const int answer = choose(app->power_on ? "DID TV TURN ON?" : "DID SOUND TOGGLE?",
-                                  response_options, RESPONSE_COUNT, RESPONSE_REPEAT);
+        const int answer = ask_response(app);
         if(answer < 0) return SEARCH_EXIT;
         if(answer == RESPONSE_NO) return SEARCH_NONE;
+        if(answer == RESPONSE_OTHER)
+        {
+            if(!has_other_hit(app, index))
+            {
+                app->other_hits[index / 8U] |= 1U << (index % 8U);
+                ++app->other_count;
+            }
+            return SEARCH_NONE;
+        }
         if(answer == RESPONSE_YES)
         {
             app->match = index;
@@ -372,12 +396,11 @@ static search_result_t search_range(identify_t* app, uint32_t first, unsigned co
                 }
             }
             if(!recent_length) { answer = RESPONSE_NO; break; }
-            answer = hit ? RESPONSE_YES : choose(app->power_on ? "DID TV TURN ON?" : "DID SOUND TOGGLE?",
-                                      response_options, RESPONSE_COUNT, RESPONSE_REPEAT);
+            answer = hit && app->power_on ? RESPONSE_YES : ask_response(app);
             if(answer < 0) return SEARCH_EXIT;
         } while(answer == RESPONSE_REPEAT);
 
-        if(answer == RESPONSE_YES)
+        if(answer == RESPONSE_YES || answer == RESPONSE_OTHER)
         {
             /* On HIT, try the most recent part first. Every candidate in the
              * tested prefix still gets the same individual confirmation. */
@@ -386,11 +409,11 @@ static search_result_t search_range(identify_t* app, uint32_t first, unsigned co
                        RECENT_COUNT] >= start + processed / 3;
             search_result_t result = search_range(app, start, processed, prioritize_recent);
             if(result != SEARCH_NONE) return result;
-            if(processed < size)
-            {
-                result = search_range(app, start + processed, size - processed, false);
-                if(result != SEARCH_NONE) return result;
-            }
+        }
+        if(processed < size)
+        {
+            const search_result_t result = search_range(app, start + processed, size - processed, false);
+            if(result != SEARCH_NONE) return result;
         }
     }
     return SEARCH_NONE;
@@ -569,10 +592,10 @@ cleanup:
     if(file) fclose(file);
 }
 
-static void browse_profiles(identify_t* app)
+static void browse_profiles(identify_t* app, uint32_t index, bool other)
 {
     identify_signal_t signal;
-    if(!read_signal(app, app->match, &signal)) return;
+    if(!read_signal(app, index, &signal)) return;
     uint32_t selected = 0;
     uint32_t scroll = 0;
     while(true)
@@ -586,7 +609,7 @@ static void browse_profiles(identify_t* app)
         if(valid)
         {
             char text[22];
-            draw_header("COMPATIBLE PROFILES");
+            draw_header(other ? "RESPONDING PROFILES" : "COMPATIBLE PROFILES");
             snprintf(text, sizeof(text), "%lu/%lu", (unsigned long)selected + 1,
                      (unsigned long)signal.profiles);
             line_at(15, text);
@@ -614,11 +637,13 @@ static void browse_profiles(identify_t* app)
                     use_profile(app, &profile);
                     if(!open_database(app))
                     {
+                        if(app->database) fclose(app->database);
+                        app->database = NULL;
                         message("IR IDENTIFY", "SD index unavailable", "B:BACK");
                         while(button(portMAX_DELAY) != BUTTON_B) {}
                         return;
                     }
-                    if(!read_signal(app, app->match, &signal)) return;
+                    if(!read_signal(app, index, &signal)) return;
                     if(selected >= signal.profiles)
                     {
                         selected = 0;
@@ -628,6 +653,36 @@ static void browse_profiles(identify_t* app)
                 break;
             case BUTTON_B: return;
             default: break;
+        }
+    }
+}
+
+static void browse_other_hits(identify_t* app)
+{
+    uint32_t index = 0;
+    while(index < app->header.signals && !has_other_hit(app, index)) ++index;
+    if(index == app->header.signals) return;
+
+    unsigned selected = 0;
+    while(true)
+    {
+        char details[22];
+        snprintf(details, sizeof(details), "Hit %u/%u", selected + 1, app->other_count);
+        message("OTHER SIGNAL HITS", details, "A:OPEN        B:BACK");
+        const uint8_t key = button(portMAX_DELAY);
+        if(key == BUTTON_B) return;
+        if(key == BUTTON_A)
+        {
+            browse_profiles(app, index, true);
+            if(!app->database || index >= app->header.signals) return;
+        }
+        else if(key == BUTTON_UP || key == BUTTON_DOWN)
+        {
+            const uint32_t total = app->header.signals;
+            const uint32_t step = key == BUTTON_UP ? total - 1 : 1;
+            const unsigned ordinal = key == BUTTON_UP ? app->other_count - 1 : 1;
+            do { index = (index + step) % total; } while(!has_other_hit(app, index));
+            selected = (selected + ordinal) % app->other_count;
         }
     }
 }
@@ -669,12 +724,20 @@ static void run_identify(identify_t* app)
     const unsigned normal_gap_ms = app->power_on ? 1500U : 350U;
     const unsigned slow_gap_ms = app->power_on ? 3000U : 800U;
     app->gap = pdMS_TO_TICKS(normal_gap_ms);
-    const char* const retry[] = {"SLOW RETRY", "RESTART"};
+    const char* const retry[] = {"SLOW RETRY", "RESTART", "VIEW OTHER HITS"};
     while(true)
     {
         app->invalid = 0;
         const search_result_t result = search_range(app, 0, app->header.signals, false);
-        if(result == SEARCH_FOUND) browse_profiles(app);
+        if(result == SEARCH_FOUND)
+        {
+            browse_profiles(app, app->match, false);
+            if(app->database && app->other_count)
+            {
+                const char* const done[] = {"DONE", "VIEW OTHER HITS"};
+                if(choose("MUTE CONFIRMED", done, 2, 0) == 1) browse_other_hits(app);
+            }
+        }
         if(result == SEARCH_TX_ERROR)
         {
             message("IR IDENTIFY", "IR transmission fail", "B:BACK");
@@ -683,8 +746,13 @@ static void run_identify(identify_t* app)
         if(result != SEARCH_NONE) break;
         const char* title = app->invalid ? "NO MATCH / BAD DATA" :
                             app->power_on ? "NO POWER ON MATCH" : "NO MUTE MATCH";
-        const int action = choose(title, retry, 2, 0);
-        if(action < 0) break;
+        int action;
+        do
+        {
+            action = choose(title, retry, app->other_count ? 3 : 2, app->other_count ? 2 : 0);
+            if(action == 2) browse_other_hits(app);
+        } while(action == 2 && app->database);
+        if(action < 0 || !app->database) break;
         app->gap = pdMS_TO_TICKS(action == 0 ? slow_gap_ms : normal_gap_ms);
     }
     ir_tx_deinit(&app->tx);
