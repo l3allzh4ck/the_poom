@@ -13,6 +13,11 @@ Open **THE ZEN → REMOTE SUITE** to use a custom button layout with a remote fr
 
 Choose **OPEN REMOTE** and select a saved layout. Press a direction to send its assigned signal. Hold **A** and press a direction to send a command from the second layer. The playback screen shows the regular buttons and last command sent. Holding **A** switches the screen to the **[FN]** shortcuts. Tap **A** or **B** to send its standalone assignment. Hold **A** and press **B** to use the **A + B** assignment. After either type of shortcut, releasing the buttons sends no additional command. Hold **B** for one second to return to Remote Suite. If B is unassigned, a tap also goes back.
 
+## Edit or delete a layout
+
+- **EDIT REMOTE** opens the current assignments. Move or reuse commands already in the layout, or choose **Unassigned** to clear a slot. **SAVE LAYOUT** updates the selected layout under the same name. To bring in commands that are only in the original Flipper file, use **CREATE REMOTE**.
+- **DELETE REMOTE** shows the selected layout and defaults to **Keep remote**. Select **Delete layout** to remove its copy under `/ir/suite/`. The source Flipper file remains available under `/ir/remotes/`.
+
 ## Hardware checks
 
 - Import a saved IR Identify profile that includes both parsed and RAW commands.
