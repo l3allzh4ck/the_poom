@@ -23,9 +23,10 @@
 
 #define SOURCE_DIR SD_CARD_PATH "/ir/remotes"
 #define LAYOUT_DIR SD_CARD_PATH "/ir/suite"
-#define SUITE_SLOTS 10U
+#define SUITE_SLOTS 11U
 #define SUITE_A_SLOT 8U
 #define SUITE_B_SLOT 9U
+#define SUITE_AB_SLOT 10U
 #define BACK_HOLD_MS 1000U
 #define MAX_COMMANDS 255U
 #define MAX_FILES 256U
@@ -64,7 +65,7 @@ static QueueHandle_t s_keys;
 static const char* const slot_names[SUITE_SLOTS] = {
     "POOM D-PAD UP", "POOM D-PAD DOWN", "POOM D-PAD LEFT", "POOM D-PAD RIGHT",
     "POOM D-PAD UP + A", "POOM D-PAD DOWN + A", "POOM D-PAD LEFT + A", "POOM D-PAD RIGHT + A",
-    "POOM A BUTTON", "POOM B BUTTON"
+    "POOM A BUTTON", "POOM B BUTTON", "POOM B BUTTON + A"
 };
 
 static void button_callback(const poom_sbus_msg_t* msg, void* context)
@@ -345,7 +346,7 @@ static void create_remote(suite_scratch_t* scratch)
 
     uint8_t slots[SUITE_SLOTS];
     memset(slots, NO_COMMAND, sizeof(slots));
-    static const uint8_t order[] = {0, 1, 2, 3, SUITE_A_SLOT, SUITE_B_SLOT, 4, 5, 6, 7};
+    static const uint8_t order[] = {0, 1, 2, 3, SUITE_A_SLOT, SUITE_B_SLOT, 4, 5, 6, 7, SUITE_AB_SLOT};
     unsigned selected = 0;
     while(true)
     {
@@ -412,6 +413,28 @@ static int direction_slot(uint8_t key)
     }
 }
 
+static void draw_playback(const char* title, const ir_file_command_t* slots, uint16_t mask,
+                          bool modified, const char* last, const char* status)
+{
+    static const uint8_t order[] = {0, 1, 2, 3, SUITE_A_SLOT, SUITE_B_SLOT, 4, 5, 6, 7, SUITE_AB_SLOT};
+    static const char* const labels[] = {"U", "D", "L", "R", "A", "B",
+                                         "A+U", "A+D", "A+L", "A+R", "A+B"};
+    header(title);
+    for(unsigned i = 0; i < SUITE_SLOTS; ++i)
+    {
+        const unsigned slot = order[i];
+        const char* name = (mask & (1U << slot)) ? slots[slot].name : "-";
+        char text[12];
+        snprintf(text, sizeof(text), "%s:%.*s", labels[i], 9 - (int)strlen(labels[i]), name);
+        text_at(i % 2 ? 60 : 0, (int16_t)(13 + 7 * (i / 2)), text);
+    }
+    text_at(60, 48, "Hold B:exit");
+    char footer[22];
+    snprintf(footer, sizeof(footer), "%s%.16s", modified ? "[FN] " : "", status ? status : last);
+    text_at(0, 56, footer);
+    poom_arduboy_display();
+}
+
 static void play_remote(suite_scratch_t* scratch)
 {
     char filename[MAX_FILENAME + 1];
@@ -449,27 +472,16 @@ static void play_remote(suite_scratch_t* scratch)
     filename[strlen(filename) - 3] = '\0';
     char title[22];
     snprintf(title, sizeof(title), "%.21s", filename);
-    static const char* const short_names[] = {"UP", "DOWN", "LEFT", "RIGHT", "A", "B"};
     bool modified = false;
     bool modifier_used = false;
     bool b_down = false;
     TickType_t b_started = 0;
     const TickType_t back_hold = pdMS_TO_TICKS(BACK_HOLD_MS);
-    const char* feedback = "Hold B:back";
+    char last[17] = "Last: -";
+    const char* status = NULL;
     while(true)
     {
-        header(title);
-        const unsigned rows = modified ? 4 : 6;
-        for(unsigned i = 0; i < rows; ++i)
-        {
-            const unsigned slot = modified ? 4 + i : i < 4 ? i : SUITE_A_SLOT + i - 4;
-            char row[22];
-            const char* name = (mask & (1U << slot)) ? slots[slot].name : "-";
-            snprintf(row, sizeof(row), "%s%s %.12s", modified ? "A+" : "", short_names[i], name);
-            text_at(0, (int16_t)(13 + i * (modified ? 10 : 7)), row);
-        }
-        text_at(0, 56, feedback);
-        poom_arduboy_display();
+        draw_playback(title, slots, mask, modified, last, status);
 
         TickType_t wait = portMAX_DELAY;
         if(b_down)
@@ -485,15 +497,26 @@ static void play_remote(suite_scratch_t* scratch)
         {
             if(key.event == PRESS_DOWN)
             {
-                b_down = true;
-                b_started = xTaskGetTickCount();
-                feedback = "Hold B:back";
-                continue;
+                if(modified)
+                {
+                    modifier_used = true;
+                    b_down = false;
+                    index = SUITE_AB_SLOT;
+                }
+                else
+                {
+                    b_down = true;
+                    b_started = xTaskGetTickCount();
+                    continue;
+                }
             }
-            if(!b_down) continue;
-            b_down = false;
-            if(xTaskGetTickCount() - b_started >= back_hold || !(mask & (1U << SUITE_B_SLOT))) break;
-            index = SUITE_B_SLOT;
+            else
+            {
+                if(!b_down) continue;
+                b_down = false;
+                if(xTaskGetTickCount() - b_started >= back_hold || !(mask & (1U << SUITE_B_SLOT))) break;
+                index = SUITE_B_SLOT;
+            }
         }
         else if(key.button == BUTTON_A)
         {
@@ -501,12 +524,10 @@ static void play_remote(suite_scratch_t* scratch)
             {
                 modified = true;
                 modifier_used = false;
-                feedback = "A layer  Hold B:back";
                 continue;
             }
             if(!modified) continue;
             modified = false;
-            feedback = "Hold B:back";
             if(modifier_used || !(mask & (1U << SUITE_A_SLOT))) continue;
             index = SUITE_A_SLOT;
         }
@@ -519,14 +540,15 @@ static void play_remote(suite_scratch_t* scratch)
         }
         if(!(mask & (1U << index)))
         {
-            feedback = "Unassigned";
+            status = "Unassigned";
             continue;
         }
         ir_file_command_t command;
         const bool sent = ir_file_read_at(file, scratch->line, scratch->raw, &command, slots[index].offset) &&
                           strcmp(command.name, slots[index].name) == 0 &&
                           ir_file_send(&tx, &command, scratch->raw, full_nec) == ESP_OK;
-        feedback = sent ? "Signal sent" : "Send failed";
+        if(sent) snprintf(last, sizeof(last), "Last: %.10s", command.name);
+        status = sent ? NULL : "Send failed";
     }
     ir_tx_deinit(&tx);
     fclose(file);
