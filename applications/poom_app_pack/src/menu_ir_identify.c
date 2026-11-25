@@ -261,6 +261,14 @@ static uint8_t stop_button(TickType_t timeout, bool can_hit)
     return result;
 }
 
+enum { RESPONSE_YES, RESPONSE_REPEAT, RESPONSE_NO, RESPONSE_COUNT };
+
+static const char* const response_options[RESPONSE_COUNT] = {
+    [RESPONSE_YES] = "YES",
+    [RESPONSE_REPEAT] = "REPEAT",
+    [RESPONSE_NO] = "NO",
+};
+
 static search_result_t verify_candidate(identify_t* app, uint32_t index, unsigned candidate, unsigned count)
 {
     ir_file_command_t cmd;
@@ -273,7 +281,6 @@ static search_result_t verify_candidate(identify_t* app, uint32_t index, unsigne
     char details[22];
     snprintf(details, sizeof(details), "%u/%u %s", candidate + 1, count,
              cmd.raw ? "RAW" : ir_protocol_name(cmd.protocol));
-    const char* const answers[] = {"YES", "NO", "REPEAT"};
     while(true)
     {
         if(app->power_on)
@@ -290,10 +297,10 @@ static search_result_t verify_candidate(identify_t* app, uint32_t index, unsigne
         if(key == BUTTON_B) return SEARCH_EXIT;
         if(ir_file_send(&app->tx, &cmd, app->raw, true) != ESP_OK) return SEARCH_TX_ERROR;
         const int answer = choose(app->power_on ? "DID TV TURN ON?" : "DID TV RESPOND?",
-                                  answers, 3, 1);
+                                  response_options, RESPONSE_COUNT, RESPONSE_REPEAT);
         if(answer < 0) return SEARCH_EXIT;
-        if(answer == 1) return SEARCH_NONE;
-        if(answer == 0)
+        if(answer == RESPONSE_NO) return SEARCH_NONE;
+        if(answer == RESPONSE_YES)
         {
             app->match = index;
             return SEARCH_FOUND;
@@ -317,7 +324,6 @@ static search_result_t search_range(identify_t* app, uint32_t first, unsigned co
         return SEARCH_NONE;
     }
 
-    const char* const answers[] = {"YES", "NO", "REPEAT"};
     for(unsigned step = 0; step < 3; ++step)
     {
         const unsigned group = recent_first ? 2 - step : step;
@@ -365,13 +371,13 @@ static search_result_t search_range(identify_t* app, uint32_t first, unsigned co
                     hit = key == BUTTON_A;
                 }
             }
-            if(!recent_length) { answer = 1; break; }
-            answer = hit ? 0 : choose(app->power_on ? "DID TV TURN ON?" : "ANY TV RESPONSE?",
-                                      answers, 3, 1);
+            if(!recent_length) { answer = RESPONSE_NO; break; }
+            answer = hit ? RESPONSE_YES : choose(app->power_on ? "DID TV TURN ON?" : "ANY TV RESPONSE?",
+                                      response_options, RESPONSE_COUNT, RESPONSE_REPEAT);
             if(answer < 0) return SEARCH_EXIT;
-        } while(answer == 2);
+        } while(answer == RESPONSE_REPEAT);
 
-        if(answer == 0)
+        if(answer == RESPONSE_YES)
         {
             /* On HIT, try the most recent part first. Every candidate in the
              * tested prefix still gets the same individual confirmation. */
