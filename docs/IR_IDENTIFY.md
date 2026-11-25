@@ -41,9 +41,9 @@ The checkout at `d126fb1b6f1e114c52b4a8c19839ea65e3a9c24d` produced 93 Mute sign
 
 ## Identify from standby
 
-Open **THE ZEN → IR IDENTIFY**, highlight **Power On** and press **A** to start. With the TV off but connected to power, press **A** on the candidate screen to send one command, then allow enough time for the TV to boot. Answer **YES** if it turns on, **NO** to advance, or **REPEAT** to try that candidate again. Use **B** to stop. Successful candidates lead to the same compatible profile selection and save workflow.
+Open **THE ZEN → IR IDENTIFY** and select **Power On**. Put the TV in standby and press **A** at the group prompt. POOM tests the group automatically, pausing 1.5 seconds between signals. Press **A** as soon as the standby light changes or the TV starts to turn on. If the group finishes, answer **YES** if the TV powered on at any point, **NO** to advance, or **REPEAT** to retest the group. Use **B** to stop.
 
-Dedicated Power On commands are tested first. The index also includes TV power toggles, which can turn a running TV off, so start with the TV in standby before sending each candidate. The app waits for you to send each candidate individually to give you time to observe the TV's response.
+POOM narrows a positive group and asks you to put the TV back in standby before starting the next group. Once three or fewer candidates remain, send and confirm each individually. A confirmed candidate opens the compatible profile list. If needed, **SLOW RETRY** uses a three-second gap. Dedicated Power On signals come first in the index, followed by power toggles, which can also turn a running TV off.
 
 ## Protocols and limits
 

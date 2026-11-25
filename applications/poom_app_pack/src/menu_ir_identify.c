@@ -211,10 +211,10 @@ static bool load_candidate(identify_t* app, uint32_t index, ir_file_command_t* c
            strcmp(cmd->name, app->power_on ? "Power On" : "Mute") == 0 && ir_file_command_valid(cmd);
 }
 
-static void draw_progress(unsigned candidates, unsigned group, unsigned done, unsigned total)
+static void draw_progress(bool power_on, unsigned candidates, unsigned group, unsigned done, unsigned total)
 {
     char text[32];
-    draw_header("IR IDENTIFY");
+    draw_header(power_on ? "POWER ON SEARCH" : "IR IDENTIFY");
     snprintf(text, sizeof(text), "Candidates: %u", candidates);
     line_at(14, text);
     snprintf(text, sizeof(text), "Group %u/3", group + 1);
@@ -297,7 +297,7 @@ static search_result_t verify_candidate(identify_t* app, uint32_t index, unsigne
  * The caller keeps the remaining siblings while a positive branch is tried. */
 static search_result_t search_range(identify_t* app, uint32_t first, unsigned count, bool recent_first)
 {
-    if(app->power_on || count <= 3)
+    if(count <= 3)
     {
         for(unsigned step = 0; step < count; ++step)
         {
@@ -322,10 +322,17 @@ static search_result_t search_range(identify_t* app, uint32_t first, unsigned co
 
         do
         {
+            if(app->power_on)
+            {
+                message("POWER ON SEARCH", "TV in standby?", "A:START       B:STOP");
+                uint8_t key;
+                do { key = button(portMAX_DELAY); } while(key != BUTTON_A && key != BUTTON_B);
+                if(key == BUTTON_B) return SEARCH_EXIT;
+            }
             processed = 0;
             recent_length = 0;
             hit = false;
-            draw_progress(count, group, 0, size);
+            draw_progress(app->power_on, count, group, 0, size);
             while(processed < size && !hit)
             {
                 ir_file_command_t cmd;
@@ -341,7 +348,7 @@ static search_result_t search_range(identify_t* app, uint32_t first, unsigned co
                 }
                 else ++app->invalid;
                 ++processed;
-                draw_progress(count, group, processed, size);
+                draw_progress(app->power_on, count, group, processed, size);
                 if(valid)
                 {
                     key = stop_button(app->gap, true);
@@ -350,7 +357,8 @@ static search_result_t search_range(identify_t* app, uint32_t first, unsigned co
                 }
             }
             if(!recent_length) { answer = 1; break; }
-            answer = hit ? 0 : choose("ANY TV RESPONSE?", answers, 3, 1);
+            answer = hit ? 0 : choose(app->power_on ? "DID TV TURN ON?" : "ANY TV RESPONSE?",
+                                      answers, 3, 1);
             if(answer < 0) return SEARCH_EXIT;
         } while(answer == 2);
 
@@ -624,7 +632,9 @@ static void run_identify(identify_t* app)
         return;
     }
 
-    app->gap = pdMS_TO_TICKS(350);
+    const unsigned normal_gap_ms = app->power_on ? 1500U : 350U;
+    const unsigned slow_gap_ms = app->power_on ? 3000U : 800U;
+    app->gap = pdMS_TO_TICKS(normal_gap_ms);
     const char* const retry[] = {"SLOW RETRY", "RESTART"};
     while(true)
     {
@@ -639,10 +649,9 @@ static void run_identify(identify_t* app)
         if(result != SEARCH_NONE) break;
         const char* title = app->invalid ? "NO MATCH / BAD DATA" :
                             app->power_on ? "NO POWER ON MATCH" : "NO MUTE MATCH";
-        const int action = app->power_on ? choose(title, &retry[1], 1, 0) :
-                                           choose(title, retry, 2, 0);
+        const int action = choose(title, retry, 2, 0);
         if(action < 0) break;
-        app->gap = pdMS_TO_TICKS(action == 0 ? 800 : 350);
+        app->gap = pdMS_TO_TICKS(action == 0 ? slow_gap_ms : normal_gap_ms);
     }
     ir_tx_deinit(&app->tx);
 }
