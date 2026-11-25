@@ -53,7 +53,7 @@ static void draw_header(const char* title)
 
 static void resume_menu(void)
 {
-    const uint8_t token = 1U;
+    const uint8_t token = MENU_IR_IDENTIFY_RESUME_TOKEN;
     poom_sbus_publish("poom/menu/resume", &token, sizeof(token), pdMS_TO_TICKS(100));
 }
 
@@ -124,7 +124,6 @@ typedef struct
     long offset;
     char name[IR_FILE_NAME_SIZE];
     uint8_t check;
-    bool marked;
     ir_raw_signal_t* learned;
 } profile_command_t;
 
@@ -557,18 +556,19 @@ static void prompt_save(identify_t* app, FILE* source, const profile_command_t* 
     }
 }
 
-static void repair_commands(profile_command_t* commands, unsigned count)
+static void repair_commands(profile_command_t* commands, unsigned count, unsigned checked)
 {
 #if defined(PIN_NUM_IR_RX)
     unsigned marked[REPAIR_BATCH];
     unsigned found = 0;
     for(unsigned i = 0; i < count && found < REPAIR_BATCH; ++i)
     {
-        if(commands[i].marked) marked[found++] = i;
+        if(commands[i].check == COMMAND_WRONG_ACTION || commands[i].check == COMMAND_NO_RESPONSE)
+            marked[found++] = i;
     }
-    if(found < REPAIR_BATCH)
+    if(checked < REPAIR_BATCH || !found)
     {
-        message("REPAIR REMOTE", "Mark 3 buttons", "B:BACK");
+        message("REPAIR REMOTE", checked < REPAIR_BATCH ? "Check 3 buttons" : "No failed buttons", "B:BACK");
         while(button(portMAX_DELAY) != BUTTON_B) {}
         return;
     }
@@ -582,7 +582,7 @@ static void repair_commands(profile_command_t* commands, unsigned count)
     ir_raw_signal_t* captures[REPAIR_BATCH] = {0};
     esp_err_t err = ir_rcv_init(&rx, &cfg, "ir_repair");
     bool cancelled = false;
-    for(unsigned i = 0; i < REPAIR_BATCH && err == ESP_OK && !cancelled; ++i)
+    for(unsigned i = 0; i < found && err == ESP_OK && !cancelled; ++i)
     {
         const char* name = commands[marked[i]].name;
         message("LEARN BUTTON", name, "A:READY     B:CANCEL");
@@ -619,25 +619,25 @@ static void repair_commands(profile_command_t* commands, unsigned count)
     if(rx.channel) ir_rcv_deinit(&rx);
     if(!cancelled && err == ESP_OK)
     {
-        for(unsigned i = 0; i < REPAIR_BATCH; ++i)
+        for(unsigned i = 0; i < found; ++i)
         {
             profile_command_t* command = &commands[marked[i]];
             free(command->learned);
             command->learned = captures[i];
-            command->marked = false;
             command->check = COMMAND_UNTESTED;
         }
         message("BUTTONS LEARNED", "Test on TV", "A:OK        B:BACK");
     }
     else
     {
-        for(unsigned i = 0; i < REPAIR_BATCH; ++i) free(captures[i]);
+        for(unsigned i = 0; i < found; ++i) free(captures[i]);
         if(cancelled) return;
         message("LEARN FAILED", "Try another capture", "A:OK        B:BACK");
     }
 #else
     (void)commands;
     (void)count;
+    (void)checked;
     message("LEARN UNAVAILABLE", "No IR receiver", "A:OK        B:BACK");
 #endif
     uint8_t key;
@@ -678,57 +678,52 @@ static void use_profile(identify_t* app, const identify_profile_t* profile)
     while(true)
     {
         atomic_store(&s_profile_controls, true);
-        unsigned marked_count = 0;
+        unsigned checked = 0;
         bool confirmed = false;
         bool learned = false;
         bool mismatch = false;
         for(unsigned i = 0; i < count; ++i)
         {
             const profile_command_t* command = &commands[i];
-            marked_count += command->marked;
+            checked += command->check != COMMAND_UNTESTED;
             learned |= command->learned != NULL;
-            mismatch |= command->marked || command->check == COMMAND_WRONG_ACTION || command->check == COMMAND_NO_RESPONSE;
+            mismatch |= command->check == COMMAND_WRONG_ACTION || command->check == COMMAND_NO_RESPONSE;
             confirmed |= command->check == COMMAND_MATCH && strncmp(command->name, "Power", 5) != 0 &&
                          (app->power_on || strcmp(command->name, "Mute") != 0);
         }
         const bool can_save = confirmed || learned || hint >= count;
-        if(selected == count && !can_save) selected = 0;
-
         draw_header("COMPATIBLE REMOTE");
-        if(selected == count)
-        {
-            line_at(23, "SAVE TO SD");
-            line_at(37, mismatch ? "Some buttons failed" : "Saves full profile");
-        }
+        const profile_command_t* command = &commands[selected];
+        char text[32];
+        line_at(23, command->name);
+        snprintf(text, sizeof(text), "%u/%u  %s", selected + 1, count,
+                 command->learned && command->check == COMMAND_UNTESTED
+                     ? "Learned" : command->check == COMMAND_UNTESTED && selected == hint
+                     ? "Try first" : status[command->check]);
+        line_at(37, text);
+
+        if(checked < REPAIR_BATCH)
+            snprintf(text, sizeof(text), "Hold L:check %u/3", checked);
         else
-        {
-            const profile_command_t* command = &commands[selected];
-            char text[32];
-            line_at(23, command->name);
-            snprintf(text, sizeof(text), "%u/%u  %s", selected + 1, count,
-                     command->marked ? "Marked" : command->learned && command->check == COMMAND_UNTESTED
-                         ? "Learned" : command->check == COMMAND_UNTESTED && selected == hint
-                         ? "Try first" : status[command->check]);
-            line_at(37, text);
-        }
-        char shortcuts[24];
-        snprintf(shortcuts, sizeof(shortcuts), "Hold L/R: repair %u", marked_count);
-        line_at(47, shortcuts);
-        line_at(56, selected == count ? "A:SAVE        B:BACK" : "A:SEND  Hold A:Save");
+            snprintf(text, sizeof(text), "Hold L:check R:learn");
+        line_at(47, text);
+        line_at(56, "A:SEND  Hold A:Save");
         poom_arduboy_display();
 
-        const unsigned choices = count + can_save;
         uint8_t key = button(portMAX_DELAY);
         atomic_store(&s_profile_controls, false);
         switch(key)
         {
-            case BUTTON_UP: selected = (selected + choices - 1) % choices; break;
-            case BUTTON_DOWN: selected = (selected + 1) % choices; break;
+            case BUTTON_UP: selected = (selected + count - 1) % count; break;
+            case BUTTON_DOWN: selected = (selected + 1) % count; break;
             case BUTTON_LEFT | HOLD_FLAG:
-                if(selected < count) commands[selected].marked = !commands[selected].marked;
+            {
+                const int result = choose(command->name, verify, 3, 2);
+                if(result >= 0) commands[selected].check = (uint8_t)(COMMAND_MATCH + result);
                 break;
+            }
             case BUTTON_RIGHT | HOLD_FLAG:
-                repair_commands(commands, count);
+                repair_commands(commands, count, checked);
                 break;
             case BUTTON_A | HOLD_FLAG:
                 if(!can_save)
@@ -737,16 +732,14 @@ static void use_profile(identify_t* app, const identify_profile_t* profile)
                     while(button(portMAX_DELAY) != BUTTON_B) {}
                     break;
                 }
-                /* fall through */
-            case BUTTON_A:
-                if(selected == count || key == (BUTTON_A | HOLD_FLAG))
                 {
                     const char* const save[] = {"KEEP TESTING", "SAVE FULL PROFILE"};
                     if(!mismatch || choose("SOME BUTTONS FAILED", save, 2, 0) == 1)
                         prompt_save(app, file, commands, count);
-                    break;
                 }
-                const profile_command_t* command = &commands[selected];
+                break;
+            case BUTTON_A:
+            {
                 esp_err_t send = ESP_ERR_INVALID_RESPONSE;
                 if(command->learned)
                     send = ir_tx_send_raw(&app->tx, command->learned, ir_raw_signal_size(command->learned));
@@ -760,12 +753,8 @@ static void use_profile(identify_t* app, const identify_profile_t* profile)
                     do { key = button(portMAX_DELAY); } while(key != BUTTON_A && key != BUTTON_B);
                     if(key == BUTTON_B) goto cleanup;
                 }
-                else
-                {
-                    const int result = choose(command->name, verify, 3, 2);
-                    if(result >= 0) commands[selected].check = (uint8_t)(COMMAND_MATCH + result);
-                }
                 break;
+            }
             case BUTTON_B: goto cleanup;
             default: break;
         }

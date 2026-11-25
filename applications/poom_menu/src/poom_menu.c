@@ -98,6 +98,8 @@
 #include "esp_log.h"
 #include "sd_card.h"
 
+#define MENU_BUTTON_PRESS_DOWN 0U
+
 #ifndef BUTTON_SINGLE_CLICK
 #define BUTTON_SINGLE_CLICK 4
 #endif
@@ -160,6 +162,7 @@ typedef struct
 static TaskHandle_t s_menu_task = NULL;
 static bool s_detached = false;
 static bool s_input_subscribed = false;
+static bool s_ignore_exit_b_click;
 
 static volatile poom_menu_screen_t s_screen = POOM_MENU_SCREEN_MAIN;
 
@@ -313,7 +316,6 @@ static void detach_menu_(void)
  */
 static void on_menu_resume_(const poom_sbus_msg_t *msg, void *user)
 {
-    (void)msg;
     (void)user;
 
     if (!s_detached)
@@ -321,6 +323,9 @@ static void on_menu_resume_(const poom_sbus_msg_t *msg, void *user)
         return;
     }
 
+    /* IR Identify handles B on press-down. Its click can arrive after resume. */
+    s_ignore_exit_b_click = msg && msg->len == 1 &&
+                            ((const uint8_t*)msg->data)[0] == MENU_IR_IDENTIFY_RESUME_TOKEN;
     s_detached = false;
     if (!s_input_subscribed)
     {
@@ -1835,6 +1840,19 @@ static void on_button_any_(const poom_sbus_msg_t *msg, void *user)
 
     button_event_msg_t ev;
     memcpy(&ev, msg->data, sizeof(ev));
+
+    if (s_ignore_exit_b_click && ev.button == BUTTON_B)
+    {
+        if (ev.event == MENU_BUTTON_PRESS_DOWN)
+        {
+            s_ignore_exit_b_click = false;
+        }
+        else if (ev.event == BUTTON_SINGLE_CLICK)
+        {
+            s_ignore_exit_b_click = false;
+            return;
+        }
+    }
 
     if (ev.event != BUTTON_SINGLE_CLICK)
     {
