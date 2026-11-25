@@ -45,6 +45,8 @@ Open **THE ZEN → IR IDENTIFY** and select **Power On**. Put the TV in standby 
 
 POOM narrows a positive group and asks you to put the TV back in standby before starting the next group. Once three or fewer candidates remain, send and confirm each individually. A confirmed candidate opens the compatible profile list. If needed, **SLOW RETRY** uses a three-second gap. Dedicated Power On signals come first in the index, followed by power toggles, which can also turn a running TV off.
 
+For direct button shortcuts, import the saved Flipper file in [Remote Suite](REMOTE_SUITE.md).
+
 ## Find a better profile on the POOM
 
 1. Tap **A** to send the selected command. Hold **Left** for two seconds to record what the TV did. For **WRONG ACTION**, pick the actual action from the list or type its name.
