@@ -62,6 +62,25 @@ These are the lines the maintainer holds, and they should stay in view:
 - **Heavy lifting offloaded to the owner's own hardware** (e.g. a Hackberry Pi CM5 for
   offline WPA cracking), against the owner's own captures.
 
+## Commit & contribution hygiene
+
+- **No AI-assistant attribution in commits or PRs.** Do **not** add `Co-Authored-By:
+  Claude` / `Co-Authored-By: Codex` / any AI trailer, no "Generated with …" lines, no
+  `*-Session:` links. The maintainer authors the work — keep commit metadata human and
+  clean. (If you catch an AI trailer in an unmerged commit, strip it and force-push.)
+- **Upstream PRs (to `The-POOM/the_poom`) stay focused and minimal.** The maintainer
+  (Jonathan) reviews for maintainability and regressions. Per his standing review notes:
+  - **Reuse the existing `sdkconfig.esp32c5.ram_optimization` profile.** Do **not**
+    introduce new `sdkconfig.*` profiles (e.g. no `sdkconfig.security_audit_release`).
+  - **Keep changes to shared components minimal** (Wi-Fi / SD / menu / pcap / etc.) —
+    only what is strictly necessary, and state in the PR why each shared change is needed.
+  - **Separate optional test infrastructure** (host-side test tools, FreeRTOS stubs)
+    from the application PR where practical.
+  - **One PR = one new application**, to avoid regressions in existing POOM apps.
+  - **Target ESP-IDF 6.1 APIs correctly** — e.g. the deep-sleep GPIO-wakeup replacement
+    is `esp_sleep_enable_gpio_wakeup_on_hp_periph_powerdown()`, **not** the light-sleep
+    pair `gpio_wakeup_enable()` + `esp_sleep_enable_gpio_wakeup()`.
+
 ## Dev quick reference
 
 - **Toolchain:** ESP-IDF **6.1**, target **esp32c5** (RISC-V, WiFi 6 dual-band, BT5 LE
